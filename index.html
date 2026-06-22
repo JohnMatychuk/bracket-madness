@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Milan Bracket Madness</title>
+  <link rel="icon" type="image/svg+xml" href="milan-icon.svg">
+  <link rel="stylesheet" href="styles.css?v=5">
+  <script>
+    (() => {
+      try {
+        const saved = localStorage.getItem('bracket-theme');
+        const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+        document.documentElement.dataset.theme = saved || (prefersDark ? 'dark' : 'light');
+      } catch { /* localStorage blocked */ }
+    })();
+  </script>
+</head>
+<body>
+  <div id="app">
+    <div class="spinner"></div>
+  </div>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="supabase-config.js?v=5"></script>
+  <script src="app.js?v=5"></script>
+</body>
+</html>
