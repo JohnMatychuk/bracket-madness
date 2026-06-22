@@ -1,4 +1,4 @@
-# Milan Bracket Madness
+# Bracket Madness
 
 A 3-bracket, 32-entry company voting game with live scoring, champion-pick bonuses, and a public dashboard. Hosted as a static site on GitHub Pages with Supabase as the backend. No Node, no terminal commands required end-to-end.
 
