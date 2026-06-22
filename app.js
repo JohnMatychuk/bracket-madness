@@ -778,7 +778,9 @@ function userMissedBracket(bracket) {
   const rounds = bracketRounds(bracket.id);
   const r1 = rounds.find(r => r.round_number === 1);
   if (!r1 || r1.status !== 'closed') return false;
-  return !state.myLocks[r1.id];
+  const r1Matchups = state.matchups[r1.id] || [];
+  // Missed = R1 closed and user has zero votes in any R1 matchup
+  return !r1Matchups.some(m => state.myVotes[m.id]);
 }
 
 function renderLockBanner(bracket) {
