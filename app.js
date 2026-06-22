@@ -246,6 +246,14 @@ function bracketStateLabel(bracket) {
 }
 function entryName(id) { return state.entries[id]?.name || '—'; }
 function entrySeed(id) { return state.entries[id]?.seed || '—'; }
+function isImageUrl(str) { return typeof str === 'string' && /^https?:\/\//i.test(str); }
+function entryIconHtml(id) {
+  const e = state.entries[id];
+  if (e?.icon && isImageUrl(e.icon)) {
+    return `<img class="slot-icon" src="${escapeHtml(e.icon)}" alt="" loading="lazy">`;
+  }
+  return '<span class="slot-icon empty" aria-hidden="true"></span>';
+}
 function escapeHtml(s) {
   return (s == null ? '' : String(s)).replace(/[<>&"']/g, c => ({
     '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&#39;',
@@ -450,6 +458,7 @@ function renderChampionPickScreen(bracket) {
               ${entries.map(e => `
                 <button class="pick-option ${myPick?.entry_id === e.id ? 'selected' : ''}" data-pick="${e.id}" data-pick-bracket="${bracket.id}" type="button">
                   <span class="seed">${e.seed}</span>
+                  ${entryIconHtml(e.id)}
                   <span class="name">${escapeHtml(e.name)}</span>
                 </button>
               `).join('')}
@@ -568,11 +577,13 @@ function renderMatchup(matchup, round, isFinal) {
           ${isFinal ? '<div class="ribbon">🏆 Champion</div>' : ''}
           <div class="slot">
             <div class="seed">${a ? entrySeed(a) : '—'}</div>
+            ${a ? entryIconHtml(a) : '<span class="slot-icon empty" aria-hidden="true"></span>'}
             <div class="name">${a ? escapeHtml(entryName(a)) : 'TBD'}</div>
             <div class="meta"></div>
           </div>
           <div class="slot">
             <div class="seed">${b ? entrySeed(b) : '—'}</div>
+            ${b ? entryIconHtml(b) : '<span class="slot-icon empty" aria-hidden="true"></span>'}
             <div class="name">${b ? escapeHtml(entryName(b)) : 'TBD'}</div>
             <div class="meta"></div>
           </div>
@@ -591,11 +602,13 @@ function renderMatchup(matchup, round, isFinal) {
           ${ribbon}
           <button class="slot ${aPicked ? 'picked' : ''}" data-vote-matchup="${matchup.id}" data-vote-entry="${a}" type="button">
             <div class="seed">${entrySeed(a)}</div>
+            ${entryIconHtml(a)}
             <div class="name">${escapeHtml(entryName(a))}</div>
             <div class="meta"></div>
           </button>
           <button class="slot ${bPicked ? 'picked' : ''}" data-vote-matchup="${matchup.id}" data-vote-entry="${b}" type="button">
             <div class="seed">${entrySeed(b)}</div>
+            ${entryIconHtml(b)}
             <div class="name">${escapeHtml(entryName(b))}</div>
             <div class="meta"></div>
           </button>
@@ -618,11 +631,13 @@ function renderMatchup(matchup, round, isFinal) {
           <div class="ribbon">Tie — awaiting admin</div>
           <div class="slot">
             <div class="seed">${entrySeed(a)}</div>
+            ${entryIconHtml(a)}
             <div class="name">${escapeHtml(entryName(a))}</div>
             <div class="meta">${votesA} · ${pctA}%</div>
           </div>
           <div class="slot">
             <div class="seed">${entrySeed(b)}</div>
+            ${entryIconHtml(b)}
             <div class="name">${escapeHtml(entryName(b))}</div>
             <div class="meta">${votesB} · ${pctB}%</div>
           </div>
@@ -635,11 +650,13 @@ function renderMatchup(matchup, round, isFinal) {
       <div class="matchup closed ${myPickWon ? 'point-earned' : ''}">
         <div class="slot ${aWin ? 'winner' : 'loser'}">
           <div class="seed">${entrySeed(a)}</div>
+          ${entryIconHtml(a)}
           <div class="name">${escapeHtml(entryName(a))}</div>
           <div class="meta">${votesA} · ${pctA}%</div>
         </div>
         <div class="slot ${bWin ? 'winner' : 'loser'}">
           <div class="seed">${entrySeed(b)}</div>
+          ${entryIconHtml(b)}
           <div class="name">${escapeHtml(entryName(b))}</div>
           <div class="meta">${votesB} · ${pctB}%</div>
         </div>

@@ -36,7 +36,7 @@ create table public.brackets (
 create table public.entries (
   id uuid primary key default gen_random_uuid(),
   bracket_id uuid not null references public.brackets(id) on delete cascade,
-  seed int not null check (seed between 1 and 32),
+  seed int not null,
   name text not null,
   unique (bracket_id, seed)
 );

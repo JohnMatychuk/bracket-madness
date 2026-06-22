@@ -169,21 +169,73 @@ async function createBracket(name, slug, bonus) {
   msg(`Created "${name}". Add 32 entries to continue.`);
 }
 
-async function saveEntries(bracketId, names) {
+async function saveEntries(bracketId, rawText) {
   const existing = state.entriesByBracket[bracketId] || [];
   if (existing.length > 0) {
     return msg('This bracket already has entries. Delete them first if you need to redo.', 'error');
   }
+  const names = rawText.split('\n').map(n => n.trim()).filter(Boolean);
   if (names.length !== 32) {
-    return msg(`Need exactly 32 entries. You pasted ${names.length}.`, 'error');
+    return msg(`Need exactly 32 entries. You provided ${names.length}.`, 'error');
   }
-  const rows = names.map((n, i) => ({ bracket_id: bracketId, seed: i + 1, name: n }));
+  const rows = names.map((name, i) => ({
+    bracket_id: bracketId,
+    seed: i + 1,
+    name,
+  }));
   const { error } = await sb.from('entries').insert(rows);
   if (error) return msg('Could not save entries: ' + error.message, 'error');
 
   await generateBracketStructure(bracketId);
   await loadData(); render();
   msg('Entries saved and bracket structure generated.');
+}
+
+function isImageUrl(str) {
+  return typeof str === 'string' && /^https?:\/\//i.test(str);
+}
+
+async function clearEntryIcon(entryId) {
+  if (state.entries[entryId]) state.entries[entryId].icon = null;
+  const { error } = await sb.from('entries').update({ icon: null }).eq('id', entryId);
+  if (error) {
+    msg('Could not clear icon: ' + error.message, 'error');
+    await loadData(); render();
+    return;
+  }
+  render();
+}
+
+async function uploadEntryIcon(entryId, file) {
+  const sizeMB = file.size / 1024 / 1024;
+  if (sizeMB > 2) {
+    return msg(`Image is ${sizeMB.toFixed(1)}MB — max 2MB. Compress or resize first.`, 'error');
+  }
+  const ext = (file.name.split('.').pop() || 'png').toLowerCase();
+  const safeExt = ['png','jpg','jpeg','gif','webp','svg'].includes(ext) ? ext : 'png';
+  const filename = `${entryId}-${Date.now()}.${safeExt}`;
+
+  const { error: uploadError } = await sb.storage
+    .from('entry-icons')
+    .upload(filename, file, { contentType: file.type, upsert: false });
+  if (uploadError) return msg('Upload failed: ' + uploadError.message, 'error');
+
+  const { data: pub } = sb.storage.from('entry-icons').getPublicUrl(filename);
+  const publicUrl = pub.publicUrl;
+
+  const { error: updateError } = await sb.from('entries').update({ icon: publicUrl }).eq('id', entryId);
+  if (updateError) return msg('Save failed: ' + updateError.message, 'error');
+
+  if (state.entries[entryId]) state.entries[entryId].icon = publicUrl;
+  render();
+  msg('Image uploaded.');
+}
+
+function renderEntryIconPreview(e) {
+  if (e.icon && isImageUrl(e.icon)) {
+    return `<img src="${escapeHtml(e.icon)}" alt="" loading="lazy">`;
+  }
+  return '<span class="preview-placeholder">+</span>';
 }
 
 async function deleteEntries(bracketId) {
@@ -280,6 +332,41 @@ async function forceCloseRound(roundId) {
   if (error) return msg('Could not close round: ' + error.message, 'error');
   await loadData(); render();
   msg('Round closed.');
+}
+
+async function openRoundNow(roundId) {
+  const { error } = await sb.rpc('admin_open_round', { p_round_id: roundId });
+  if (error) return msg('Could not open round: ' + error.message, 'error');
+  await loadData(); render();
+  msg('Round opened. Users can now vote.');
+}
+
+async function reorderEntries(bracketId, draggedId, targetId, dropBefore) {
+  const sorted = (state.entriesByBracket[bracketId] || []).slice().sort((a, b) => a.seed - b.seed);
+  const orderedIds = sorted.map(e => e.id);
+  const fromIdx = orderedIds.indexOf(draggedId);
+  if (fromIdx < 0) return;
+  orderedIds.splice(fromIdx, 1);
+  let toIdx = orderedIds.indexOf(targetId);
+  if (toIdx < 0) toIdx = orderedIds.length;
+  if (!dropBefore) toIdx += 1;
+  orderedIds.splice(toIdx, 0, draggedId);
+
+  // Optimistic local reseed for snappy UX
+  orderedIds.forEach((id, i) => { if (state.entries[id]) state.entries[id].seed = i + 1; });
+  render();
+
+  const { error } = await sb.rpc('admin_reorder_entries', {
+    p_bracket_id: bracketId,
+    p_entry_ids: orderedIds,
+  });
+  if (error) {
+    msg('Could not reorder: ' + error.message, 'error');
+    await loadData(); render();
+    return;
+  }
+  await loadData(); render();
+  msg('Seeding updated. Round 1 matchups repaired.');
 }
 
 async function resolveTie(matchupId, winnerEntryId) {
@@ -522,15 +609,30 @@ function renderEntriesSection(bracket, entries) {
   if (entries.length === 0) {
     return `
       <h3>1. Add 32 entries</h3>
-      <p class="sub">Paste 32 names below, one per line. Seed 1 (top seed) at the top, seed 32 at the bottom.</p>
-      <textarea id="entries-${bracket.id}" placeholder="Kermit the Frog&#10;Yoda&#10;The Hulk&#10;…"></textarea>
+      <p class="sub">Paste 32 names below, one per line. Seed 1 (top seed) at the top, seed 32 at the bottom. You'll upload images per entry after this step.</p>
+      <textarea id="entries-${bracket.id}" placeholder="Monopoly&#10;Scrabble&#10;Chess&#10;…"></textarea>
       <button class="btn" data-save-entries="${bracket.id}" type="button">Save entries &amp; generate bracket</button>`;
   }
+  const locked = !['setup', 'champion_picks'].includes(bracket.status);
+  const sorted = entries.slice().sort((a, b) => a.seed - b.seed);
   return `
-    <h3>1. Entries (locked in)</h3>
-    <p class="sub">32 entries seeded 1–32. To redo, you'll need to delete the bracket and start over (votes will be wiped).</p>
-    <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap:6px; margin-bottom:16px; font-size:13px;">
-      ${entries.map(e => `<div style="background:var(--bg); padding:6px 10px; border-radius:4px;"><span style="color:var(--mid-gray); font-weight:800; font-size:11px;">${e.seed}</span> · ${escapeHtml(e.name)}</div>`).join('')}
+    <h3>1. Entries ${locked ? '(locked — voting started)' : '(drag to reorder, click icon slot to upload)'}</h3>
+    <p class="sub">${locked
+      ? 'Voting has started, so seeds and icons are locked. Reordering would invalidate cast votes.'
+      : 'Top of the list is seed 1. Drag the ⋮⋮ handle to reseed (Round 1 matchups repair automatically). Click any icon slot to upload an image — max 2MB, square images look best.'}</p>
+    <div class="entries-grid" data-entries-bracket="${bracket.id}">
+      ${sorted.map(e => `
+        <div class="entry-item ${locked ? 'locked' : ''}" data-entry-id="${e.id}">
+          ${locked ? '' : '<span class="drag-handle" draggable="true" aria-hidden="true" title="Drag to reorder">⋮⋮</span>'}
+          <span class="entry-seed">${e.seed}</span>
+          <label class="entry-icon-slot" ${locked ? '' : `title="${e.icon ? 'Click to replace image' : 'Click to upload an image'}"`}>
+            ${renderEntryIconPreview(e)}
+            ${locked ? '' : `<input type="file" accept="image/*" hidden data-upload-entry="${e.id}">`}
+          </label>
+          ${(!locked && e.icon) ? `<button class="entry-icon-clear" type="button" data-clear-entry="${e.id}" title="Clear icon" aria-label="Clear icon for ${escapeHtml(e.name)}">×</button>` : ''}
+          <span class="entry-name">${escapeHtml(e.name)}</span>
+        </div>
+      `).join('')}
     </div>
     <button class="btn ghost" data-delete-entries="${bracket.id}" type="button">Delete entries &amp; rounds (start over)</button>`;
 }
@@ -573,7 +675,10 @@ function renderRoundsSection(bracket, rounds) {
       <div class="bracket-card">
         <div class="bracket-card-head">
           <h3 style="margin:0;">${escapeHtml(r.name)} <span class="bracket-status-pill ${r.status === 'open' ? 'voting' : r.status === 'closed' ? 'complete' : ''}">${r.status}</span></h3>
-          ${r.status === 'open' ? `<button class="btn danger" data-force-close="${r.id}" type="button">Force-close now</button>` : ''}
+          <div style="display:flex; gap:8px;">
+            ${r.status === 'pending' ? `<button class="btn lime" data-open-round="${r.id}" type="button">Open now</button>` : ''}
+            ${r.status === 'open' ? `<button class="btn danger" data-force-close="${r.id}" type="button">Force-close now</button>` : ''}
+          </div>
         </div>
         <form data-update-round="${r.id}">
           <div class="row">
@@ -651,8 +756,7 @@ function attachAdminHandlers() {
     el.addEventListener('click', () => {
       const bracketId = el.dataset.saveEntries;
       const ta = document.getElementById('entries-' + bracketId);
-      const names = ta.value.split('\n').map(n => n.trim()).filter(Boolean);
-      saveEntries(bracketId, names);
+      saveEntries(bracketId, ta.value);
     });
   });
 
@@ -685,6 +789,81 @@ function attachAdminHandlers() {
 
   document.querySelectorAll('[data-force-close]').forEach(el => {
     el.addEventListener('click', () => forceCloseRound(el.dataset.forceClose));
+  });
+
+  document.querySelectorAll('[data-open-round]').forEach(el => {
+    el.addEventListener('click', () => openRoundNow(el.dataset.openRound));
+  });
+
+  attachEntryDragHandlers();
+}
+
+let dragSourceId = null;
+let dragBracketId = null;
+
+function attachEntryDragHandlers() {
+  document.querySelectorAll('[data-entries-bracket]').forEach(grid => {
+    const bracketId = grid.dataset.entriesBracket;
+
+    grid.querySelectorAll('.drag-handle[draggable="true"]').forEach(handle => {
+      const item = handle.closest('.entry-item');
+      handle.addEventListener('dragstart', (e) => {
+        dragSourceId = item.dataset.entryId;
+        dragBracketId = bracketId;
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/plain', dragSourceId);
+        item.classList.add('dragging');
+      });
+      handle.addEventListener('dragend', () => {
+        item.classList.remove('dragging');
+        document.querySelectorAll('.drag-over-before, .drag-over-after').forEach(el => {
+          el.classList.remove('drag-over-before', 'drag-over-after');
+        });
+        dragSourceId = null;
+        dragBracketId = null;
+      });
+    });
+
+    grid.querySelectorAll('.entry-item').forEach(item => {
+      item.addEventListener('dragover', (e) => {
+        if (!dragSourceId || dragBracketId !== bracketId) return;
+        if (item.dataset.entryId === dragSourceId) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+        const rect = item.getBoundingClientRect();
+        const before = (e.clientY - rect.top) < rect.height / 2;
+        item.classList.toggle('drag-over-before', before);
+        item.classList.toggle('drag-over-after', !before);
+      });
+      item.addEventListener('dragleave', () => {
+        item.classList.remove('drag-over-before', 'drag-over-after');
+      });
+      item.addEventListener('drop', (e) => {
+        e.preventDefault();
+        if (!dragSourceId || dragBracketId !== bracketId) return;
+        const targetId = item.dataset.entryId;
+        if (targetId === dragSourceId) return;
+        const before = item.classList.contains('drag-over-before');
+        item.classList.remove('drag-over-before', 'drag-over-after');
+        reorderEntries(bracketId, dragSourceId, targetId, before);
+      });
+    });
+
+    grid.querySelectorAll('input[type="file"][data-upload-entry]').forEach(fileInput => {
+      fileInput.addEventListener('change', () => {
+        const file = fileInput.files && fileInput.files[0];
+        if (file) uploadEntryIcon(fileInput.dataset.uploadEntry, file);
+        fileInput.value = '';
+      });
+    });
+
+    grid.querySelectorAll('[data-clear-entry]').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        clearEntryIcon(btn.dataset.clearEntry);
+      });
+    });
   });
 
   document.querySelectorAll('[data-resolve-tie-matchup]').forEach(el => {
