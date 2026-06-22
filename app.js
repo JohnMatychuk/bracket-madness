@@ -26,6 +26,7 @@ const state = {
   signinError: null,
   signinInfo: null,
   signinBusy: false,
+  changingPickFor: null,
 };
 
 // ============================================================
@@ -212,6 +213,7 @@ async function submitChampionPick(bracketId, entryId) {
     alert('Could not save your pick: ' + res.error.message);
     return;
   }
+  state.changingPickFor = null;
   await loadData();
   render();
 }
@@ -425,10 +427,73 @@ function renderActiveBracket() {
         <p>This bracket is being set up. Check back once entries are in and picks open.</p>
       </div>${renderFooter()}`;
   }
-  if (b.status === 'champion_picks') {
-    return renderChampionPickScreen(b) + renderFooter();
-  }
   return renderBracketView(b) + renderFooter();
+}
+
+function canStillPickChampion(bracket) {
+  if (!['champion_picks', 'voting'].includes(bracket.status)) return false;
+  if (!bracket.champion_picks_close_at) return true;
+  return new Date(bracket.champion_picks_close_at) > new Date();
+}
+
+function renderChampionPickInline(bracket) {
+  if (!canStillPickChampion(bracket)) return '';
+  const entries = Object.values(state.entries)
+    .filter(e => e.bracket_id === bracket.id)
+    .sort((a, b) => a.seed - b.seed);
+  if (entries.length === 0) return '';
+
+  const myPick = state.myChampionPicks[bracket.id];
+  const isChanging = state.changingPickFor === bracket.id;
+  const cd = bracket.champion_picks_close_at
+    ? formatCountdown(bracket.champion_picks_close_at)
+    : null;
+  const targetAttr = bracket.champion_picks_close_at
+    ? ` data-countdown-target="${bracket.champion_picks_close_at}"`
+    : '';
+
+  if (myPick && !isChanging) {
+    return `
+      <section class="champion-pick-banner picked">
+        <div class="cpb-info">
+          <div class="cpb-label">Your champion pick</div>
+          <div class="cpb-pick">
+            ${entryIconHtml(myPick.entry_id)}
+            <strong>${escapeHtml(entryName(myPick.entry_id))}</strong>
+          </div>
+        </div>
+        <div class="cpb-right">
+          <div class="cpb-deadline"${targetAttr}>
+            <div class="cpb-deadline-label">Locks in</div>
+            <div class="cpb-deadline-time">${cd || 'Soon'}</div>
+          </div>
+          <button class="btn ghost" data-change-pick="${bracket.id}" type="button">Change pick</button>
+        </div>
+      </section>`;
+  }
+
+  return `
+    <section class="champion-pick-banner expanded">
+      <div class="cpb-header">
+        <div>
+          <div class="cpb-label">Champion pick · +${bracket.champion_bonus_points} bonus if your pick wins it all</div>
+          <div class="cpb-title">Pick the bracket winner${myPick ? ' — your current pick is ' + escapeHtml(entryName(myPick.entry_id)) : ''}</div>
+        </div>
+        <div class="cpb-deadline"${targetAttr}>
+          <div class="cpb-deadline-label">Locks in</div>
+          <div class="cpb-deadline-time">${cd || 'Open'}</div>
+        </div>
+      </div>
+      <div class="picks-grid">
+        ${entries.map(e => `
+          <button class="pick-option ${myPick?.entry_id === e.id ? 'selected' : ''}" data-pick="${e.id}" data-pick-bracket="${bracket.id}" type="button">
+            <span class="seed">${e.seed}</span>
+            ${entryIconHtml(e.id)}
+            <span class="name">${escapeHtml(e.name)}</span>
+          </button>
+        `).join('')}
+      </div>
+    </section>`;
 }
 
 function renderChampionPickScreen(bracket) {
@@ -528,6 +593,7 @@ function renderBracketView(bracket) {
 
   return `
     ${renderHero(bracket, heroOpts)}
+    ${renderChampionPickInline(bracket)}
     <div class="main-area">
       <div class="bracket-wrap">
         <div class="bracket-inner">
@@ -702,6 +768,12 @@ function attachAppHandlers() {
   });
   document.querySelectorAll('[data-pick]').forEach(el => {
     el.addEventListener('click', () => submitChampionPick(el.dataset.pickBracket, el.dataset.pick));
+  });
+  document.querySelectorAll('[data-change-pick]').forEach(el => {
+    el.addEventListener('click', () => {
+      state.changingPickFor = el.dataset.changePick;
+      render();
+    });
   });
   document.querySelectorAll('[data-vote-matchup]').forEach(el => {
     el.addEventListener('click', () => castVote(el.dataset.voteMatchup, el.dataset.voteEntry));

@@ -248,7 +248,15 @@ async function deleteEntries(bracketId) {
 }
 
 async function generateBracketStructure(bracketId) {
-  // Create 5 rounds with placeholder schedules (admin will edit)
+  // Fetch entries fresh from DB — local state may not be refreshed yet
+  const { data: entries, error: entriesErr } = await sb.from('entries')
+    .select('*').eq('bracket_id', bracketId).order('seed');
+  if (entriesErr) return msg('Could not load entries: ' + entriesErr.message, 'error');
+  if (!entries || entries.length !== 32) {
+    return msg(`Expected 32 entries, got ${entries?.length || 0}.`, 'error');
+  }
+
+  // Create 5 rounds with placeholder schedules
   const now = new Date();
   const baseStart = new Date(now.getTime() + 24 * 60 * 60 * 1000);
   const roundRows = ROUND_DEFS.map((rd, i) => ({
@@ -262,12 +270,11 @@ async function generateBracketStructure(bracketId) {
   const { data: rounds, error: rErr } = await sb.from('rounds').insert(roundRows).select();
   if (rErr) return msg('Round create failed: ' + rErr.message, 'error');
 
-  const entries = state.entriesByBracket[bracketId].slice().sort((a, b) => a.seed - b.seed);
   const seedOrder = generateSeedOrder(32);
   const seedToEntry = {};
   entries.forEach(e => { seedToEntry[e.seed] = e; });
 
-  // Round 1: pair entries by seed order
+  // Round 1: pair entries by tournament seeding
   const r1 = rounds.find(r => r.round_number === 1);
   const r1Matchups = [];
   for (let i = 0; i < 16; i++) {
@@ -278,16 +285,18 @@ async function generateBracketStructure(bracketId) {
       entry_b_id: seedToEntry[seedOrder[2 * i + 1]].id,
     });
   }
-  await sb.from('matchups').insert(r1Matchups);
+  const { error: mErr } = await sb.from('matchups').insert(r1Matchups);
+  if (mErr) return msg('R1 matchups failed: ' + mErr.message, 'error');
 
-  // Rounds 2-5: empty matchups
+  // Rounds 2-5: empty matchups (winners get filled in as bracket advances)
   for (const rd of ROUND_DEFS.slice(1)) {
     const round = rounds.find(r => r.round_number === rd.number);
     const empties = [];
     for (let i = 0; i < rd.matchups; i++) {
       empties.push({ round_id: round.id, position: i });
     }
-    await sb.from('matchups').insert(empties);
+    const { error: emptyErr } = await sb.from('matchups').insert(empties);
+    if (emptyErr) return msg(`R${rd.number} matchups failed: ${emptyErr.message}`, 'error');
   }
 }
 
@@ -638,32 +647,47 @@ function renderEntriesSection(bracket, entries) {
 }
 
 function renderChampionPicksSection(bracket) {
-  if (bracket.status === 'setup') {
-    return ''; // need entries first
-  }
-  if (bracket.status === 'champion_picks') {
+  const entries = state.entriesByBracket[bracket.id] || [];
+  if (entries.length === 0) return '';
+
+  const hasDeadline = !!bracket.champion_picks_close_at;
+  const deadlinePassed = hasDeadline && new Date(bracket.champion_picks_close_at) <= new Date();
+
+  if (bracket.status === 'complete') {
     return `
-      <h3>2. Champion picks — OPEN</h3>
-      <p class="sub">Closes ${formatWhen(bracket.champion_picks_close_at)}. Once R1 opens, this locks automatically.</p>
+      <h3>2. Champion picks — FINAL</h3>
+      <p class="sub">Bracket is complete. Champion bonuses have been awarded.</p>`;
+  }
+
+  if (!hasDeadline) {
+    return `
+      <h3>2. Open champion picks</h3>
+      <p class="sub">Let players pick the bracket winner. They earn a bonus if their pick takes home the whole bracket. Picks can stay open through Round 1 voting — set the deadline to whenever you want them locked in.</p>
       <form data-open-picks="${bracket.id}">
-        <label for="picks-close-${bracket.id}">Update close time</label>
-        <input id="picks-close-${bracket.id}" type="datetime-local" value="${toLocalDateTime(bracket.champion_picks_close_at)}" required>
-        <button class="btn" type="submit">Update deadline</button>
+        <label for="picks-close-${bracket.id}">Picks close at</label>
+        <input id="picks-close-${bracket.id}" type="datetime-local" required>
+        <button class="btn lime" type="submit">Open champion picks</button>
       </form>`;
   }
-  if (bracket.status === 'voting' || bracket.status === 'complete') {
+
+  if (deadlinePassed) {
     return `
       <h3>2. Champion picks — LOCKED</h3>
-      <p class="sub">Picks closed when round 1 opened. Players can no longer change their pick.</p>`;
+      <p class="sub">Deadline ${formatWhen(bracket.champion_picks_close_at)} has passed. Players can no longer change their pick.</p>
+      <form data-open-picks="${bracket.id}">
+        <label for="picks-close-${bracket.id}">Extend deadline (reopens picks)</label>
+        <input id="picks-close-${bracket.id}" type="datetime-local" value="${toLocalDateTime(bracket.champion_picks_close_at)}" required>
+        <button class="btn ghost" type="submit">Update deadline</button>
+      </form>`;
   }
-  // bracket has entries but no picks open yet
+
   return `
-    <h3>2. Open champion picks</h3>
-    <p class="sub">Let players pick their bracket champion before round 1 opens. They earn a bonus if their pick wins the whole bracket.</p>
+    <h3>2. Champion picks — OPEN</h3>
+    <p class="sub">Closes ${formatWhen(bracket.champion_picks_close_at)}.${bracket.status === 'voting' ? ' Round 1 is also open — picks and voting are running concurrently.' : ''}</p>
     <form data-open-picks="${bracket.id}">
-      <label for="picks-close-${bracket.id}">Picks close at</label>
-      <input id="picks-close-${bracket.id}" type="datetime-local" required>
-      <button class="btn lime" type="submit">Open champion picks</button>
+      <label for="picks-close-${bracket.id}">Update close time</label>
+      <input id="picks-close-${bracket.id}" type="datetime-local" value="${toLocalDateTime(bracket.champion_picks_close_at)}" required>
+      <button class="btn" type="submit">Save deadline</button>
     </form>`;
 }
 

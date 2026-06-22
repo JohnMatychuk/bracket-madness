@@ -621,6 +621,88 @@ a:hover { text-decoration: underline; }
 }
 
 /* ============================================================
+   CHAMPION PICK INLINE BANNER (lives above bracket during voting)
+   ============================================================ */
+.champion-pick-banner {
+  margin: 0 32px 24px;
+  background: white;
+  border: 2px solid var(--milan-blue);
+  border-radius: 12px;
+  padding: 18px 22px;
+  box-shadow: 0 2px 8px rgba(0,136,171,0.10);
+}
+.champion-pick-banner.picked {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  flex-wrap: wrap;
+}
+.champion-pick-banner .cpb-label {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 1.6px;
+  text-transform: uppercase;
+  color: var(--dark-gray);
+}
+.champion-pick-banner .cpb-pick {
+  display: flex; align-items: center; gap: 10px;
+  margin-top: 4px;
+  font-size: 18px;
+  color: var(--dark-teal);
+}
+.champion-pick-banner .cpb-pick .slot-icon { width: 32px; height: 32px; }
+.champion-pick-banner .cpb-right {
+  display: flex; align-items: center; gap: 18px;
+}
+.champion-pick-banner .cpb-deadline { text-align: right; }
+.champion-pick-banner .cpb-deadline-label {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 1.4px;
+  text-transform: uppercase;
+  color: var(--dark-gray);
+}
+.champion-pick-banner .cpb-deadline-time {
+  font-weight: 800;
+  font-size: 18px;
+  color: var(--milan-blue);
+  font-variant-numeric: tabular-nums;
+  margin-top: 2px;
+}
+.champion-pick-banner.expanded .cpb-header {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 24px;
+  margin-bottom: 14px;
+}
+.champion-pick-banner.expanded .cpb-title {
+  font-weight: 800;
+  font-size: 20px;
+  color: var(--dark-teal);
+  margin-top: 4px;
+  letter-spacing: -0.2px;
+}
+.champion-pick-banner.expanded .picks-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+  gap: 6px;
+}
+[data-theme="dark"] .champion-pick-banner {
+  background: #112E38;
+  border-color: var(--milan-blue);
+  box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+}
+[data-theme="dark"] .champion-pick-banner .cpb-pick { color: #E8F3F7; }
+[data-theme="dark"] .champion-pick-banner.expanded .cpb-title { color: #E8F3F7; }
+@media (max-width: 720px) {
+  .champion-pick-banner { margin: 0 16px 20px; padding: 16px; }
+  .champion-pick-banner.picked { gap: 12px; }
+  .champion-pick-banner .cpb-right { width: 100%; justify-content: space-between; }
+}
+
+/* ============================================================
    CHAMPION PICKS SCREEN
    ============================================================ */
 .picks-section {

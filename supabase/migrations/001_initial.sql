@@ -307,8 +307,8 @@ begin
     raise exception 'Admin only' using errcode = '42501';
   end if;
   update public.brackets
-    set status = 'champion_picks',
-        champion_picks_close_at = p_close_at
+    set champion_picks_close_at = p_close_at,
+        status = case when status = 'setup' then 'champion_picks' else status end
     where id = p_bracket_id;
 end;
 $$;
@@ -513,7 +513,7 @@ create policy "Cast champion pick"
     and exists (
       select 1 from public.brackets b
       where b.id = champion_picks.bracket_id
-        and b.status = 'champion_picks'
+        and b.status in ('champion_picks', 'voting')
         and (b.champion_picks_close_at is null or now() < b.champion_picks_close_at)
     )
   );
@@ -525,7 +525,7 @@ create policy "Update champion pick before lock"
     and exists (
       select 1 from public.brackets b
       where b.id = champion_picks.bracket_id
-        and b.status = 'champion_picks'
+        and b.status in ('champion_picks', 'voting')
         and (b.champion_picks_close_at is null or now() < b.champion_picks_close_at)
     )
   );
