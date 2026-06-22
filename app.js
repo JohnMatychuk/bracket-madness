@@ -19,6 +19,7 @@ const state = {
   matchups: {},
   myVotes: {},
   myChampionPicks: {},
+  myLocks: {},
   tallies: {},
   leaderboard: [],
   activeBracketId: null,
@@ -117,7 +118,7 @@ async function loadData() {
 
   const [
     playerRes, bracketsRes, entriesRes, roundsRes, matchupsRes,
-    votesRes, picksRes, talliesRes, leaderboardRes,
+    votesRes, picksRes, locksRes, leaderboardRes,
   ] = await Promise.all([
     sb.from('players').select('*').eq('id', state.user.id).maybeSingle(),
     sb.from('brackets').select('*').order('sort_order').order('created_at'),
@@ -126,7 +127,7 @@ async function loadData() {
     sb.from('matchups').select('*').order('position'),
     sb.from('votes').select('*').eq('player_id', state.user.id),
     sb.from('champion_picks').select('*').eq('player_id', state.user.id),
-    sb.from('matchup_tallies').select('*'),
+    sb.from('round_locks').select('*').eq('player_id', state.user.id),
     sb.from('leaderboard').select('*').order('total_points', { ascending: false }),
   ]);
 
@@ -148,9 +149,24 @@ async function loadData() {
   (votesRes.data || []).forEach(v => state.myVotes[v.matchup_id] = v);
   state.myChampionPicks = {};
   (picksRes.data || []).forEach(p => state.myChampionPicks[p.bracket_id] = p);
-  state.tallies = {};
-  (talliesRes.data || []).forEach(t => state.tallies[t.matchup_id] = t);
+  state.myLocks = {};
+  (locksRes.data || []).forEach(l => state.myLocks[l.round_id] = l);
   state.leaderboard = leaderboardRes.data || [];
+
+  // Fetch tallies only for rounds the caller can see: closed rounds OR rounds the caller has locked
+  state.tallies = {};
+  const tallyPromises = [];
+  Object.values(state.rounds).flat().forEach(round => {
+    const visible = round.status === 'closed' || !!state.myLocks[round.id];
+    if (visible) {
+      tallyPromises.push(
+        sb.rpc('get_round_tallies', { p_round_id: round.id }).then(({ data }) => {
+          (data || []).forEach(t => { state.tallies[t.matchup_id] = t; });
+        })
+      );
+    }
+  });
+  await Promise.all(tallyPromises);
 
   if (!state.activeBracketId && state.brackets.length > 0) {
     state.activeBracketId = state.brackets[0].id;
@@ -223,6 +239,17 @@ function selectBracket(bracketId) {
   render();
 }
 
+async function lockMyVotesForRound(roundId, roundName) {
+  if (!confirm(`Lock in your votes for ${roundName}? You won't be able to change them after this. In return you'll see live vote tallies.`)) return;
+  const { error } = await sb.rpc('lock_round', { p_round_id: roundId });
+  if (error) {
+    alert('Could not lock in: ' + error.message);
+    return;
+  }
+  await loadData();
+  render();
+}
+
 // ============================================================
 // HELPERS
 // ============================================================
@@ -290,13 +317,82 @@ function formatCountdown(target) {
 // ============================================================
 // RENDER
 // ============================================================
+let lastRenderedSection = null;
+
 function render() {
   const root = document.getElementById('app');
   if (!state.ready) { root.innerHTML = `<div class="spinner"></div>`; return; }
   if (!state.user) { root.innerHTML = renderSignIn(); attachSigninHandlers(); return; }
   root.innerHTML = renderApp();
   attachAppHandlers();
+
+  // Only animate when changing sections (not on every 30s auto-refresh)
+  const currentSection = state.activeBracketId || '__none__';
+  if (currentSection !== lastRenderedSection) {
+    root.classList.add('bm-animate');
+    setTimeout(() => root.classList.remove('bm-animate'), 700);
+    lastRenderedSection = currentSection;
+  }
+
+  requestAnimationFrame(() => requestAnimationFrame(drawBracketConnectors));
 }
+
+function drawBracketConnectors() {
+  const inner = document.querySelector('.bracket-inner');
+  if (!inner) return;
+  inner.style.position = 'relative';
+  const old = inner.querySelector(':scope > svg.bracket-connectors');
+  if (old) old.remove();
+
+  const containerRect = inner.getBoundingClientRect();
+  if (containerRect.width === 0) return;
+
+  const NS = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(NS, 'svg');
+  svg.classList.add('bracket-connectors');
+  svg.setAttribute('width', String(containerRect.width));
+  svg.setAttribute('height', String(containerRect.height));
+
+  const cols = inner.querySelectorAll('.round-col');
+  for (let i = 0; i < cols.length - 1; i++) {
+    const aWraps = cols[i].querySelectorAll('.matchup-wrap');
+    const nWraps = cols[i + 1].querySelectorAll('.matchup-wrap');
+    for (let j = 0; j < aWraps.length; j += 2) {
+      const A = aWraps[j], B = aWraps[j + 1], T = nWraps[j / 2];
+      if (!A || !B || !T) continue;
+      const aR = A.getBoundingClientRect();
+      const bR = B.getBoundingClientRect();
+      const tR = T.getBoundingClientRect();
+      const aX = aR.right - containerRect.left;
+      const aY = aR.top + aR.height / 2 - containerRect.top;
+      const bX = bR.right - containerRect.left;
+      const bY = bR.top + bR.height / 2 - containerRect.top;
+      const tX = tR.left - containerRect.left;
+      const tY = tR.top + tR.height / 2 - containerRect.top;
+      const midX = (Math.max(aX, bX) + tX) / 2;
+
+      const lineFromA = document.createElementNS(NS, 'polyline');
+      lineFromA.setAttribute('points', `${aX},${aY} ${midX},${aY} ${midX},${tY} ${tX},${tY}`);
+      lineFromA.setAttribute('fill', 'none');
+      lineFromA.setAttribute('stroke', 'currentColor');
+      lineFromA.setAttribute('stroke-width', '1.5');
+      lineFromA.setAttribute('stroke-linejoin', 'round');
+      svg.appendChild(lineFromA);
+
+      const lineFromB = document.createElementNS(NS, 'polyline');
+      lineFromB.setAttribute('points', `${bX},${bY} ${midX},${bY} ${midX},${tY}`);
+      lineFromB.setAttribute('fill', 'none');
+      lineFromB.setAttribute('stroke', 'currentColor');
+      lineFromB.setAttribute('stroke-width', '1.5');
+      lineFromB.setAttribute('stroke-linejoin', 'round');
+      svg.appendChild(lineFromB);
+    }
+  }
+
+  inner.appendChild(svg);
+}
+
+window.addEventListener('resize', () => requestAnimationFrame(drawBracketConnectors));
 
 function renderConfigMissing() {
   return `
@@ -401,6 +497,7 @@ function renderTopNav() {
 
 function renderBracketTabs() {
   if (state.brackets.length === 0) return '';
+  const anyComplete = state.brackets.some(b => b.status === 'complete');
   return `
     <nav class="bracket-tabs">
       ${state.brackets.map(b => `
@@ -409,10 +506,19 @@ function renderBracketTabs() {
           <span class="pill">${bracketStateLabel(b)}</span>
         </button>
       `).join('')}
+      ${anyComplete ? `
+        <button class="bracket-tab ${state.activeBracketId === 'standings' ? 'active' : ''}" data-bracket-tab="standings" type="button">
+          Final Standings
+          <span class="pill">🏆</span>
+        </button>
+      ` : ''}
     </nav>`;
 }
 
 function renderActiveBracket() {
+  if (state.activeBracketId === 'standings') {
+    return renderStandingsPage() + renderFooter();
+  }
   const b = activeBracket();
   if (!b) {
     return `
@@ -431,13 +537,55 @@ function renderActiveBracket() {
   return renderBracketView(b) + renderFooter();
 }
 
+function renderStandingsPage() {
+  const board = state.leaderboard;
+  const completedBrackets = state.brackets.filter(b => b.status === 'complete');
+  const allComplete = completedBrackets.length === state.brackets.length;
+  const myId = state.player?.id;
+
+  return `
+    <section class="hero">
+      <div>
+        <h1>Final <span class="accent">Standings</span><span class="lime-dot"></span></h1>
+        <div class="tagline">${allComplete ? 'All' : completedBrackets.length + ' of ' + state.brackets.length} brackets complete · ${board.length} player${board.length === 1 ? '' : 's'}</div>
+      </div>
+    </section>
+    <div class="standings-page">
+      ${board.length === 0 ? '<div class="empty-state"><p>No standings yet.</p></div>' : `
+      <table class="standings-table">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Player</th>
+            <th class="num">Total</th>
+            <th class="num">Rounds</th>
+            <th class="num">Champion Bonus</th>
+            <th>Champions Alive</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${board.map((r, i) => `
+            <tr class="${r.player_id === myId ? 'you' : ''} ${i === 0 ? 'first' : ''}">
+              <td class="rank">${i + 1}</td>
+              <td class="player">${r.player_id === myId ? 'You' : escapeHtml(r.display_name)}</td>
+              <td class="num total">${r.total_points}</td>
+              <td class="num">${r.round_points}</td>
+              <td class="num">${r.champion_bonus}</td>
+              <td>${r.champions_alive}/${r.champions_picked || 0}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>`}
+    </div>`;
+}
+
 function canStillPickChampion(bracket) {
   if (!['champion_picks', 'voting'].includes(bracket.status)) return false;
   if (!bracket.champion_picks_close_at) return true;
   return new Date(bracket.champion_picks_close_at) > new Date();
 }
 
-function renderChampionPickInline(bracket) {
+function renderChampionPickGrid(bracket) {
   if (!canStillPickChampion(bracket)) return '';
   const entries = Object.values(state.entries)
     .filter(e => e.bracket_id === bracket.id)
@@ -446,32 +594,15 @@ function renderChampionPickInline(bracket) {
 
   const myPick = state.myChampionPicks[bracket.id];
   const isChanging = state.changingPickFor === bracket.id;
+  // Only show the expanded grid if no pick yet OR user explicitly clicked "Change pick"
+  if (myPick && !isChanging) return '';
+
   const cd = bracket.champion_picks_close_at
     ? formatCountdown(bracket.champion_picks_close_at)
     : null;
   const targetAttr = bracket.champion_picks_close_at
     ? ` data-countdown-target="${bracket.champion_picks_close_at}"`
     : '';
-
-  if (myPick && !isChanging) {
-    return `
-      <section class="champion-pick-banner picked">
-        <div class="cpb-info">
-          <div class="cpb-label">Your champion pick</div>
-          <div class="cpb-pick">
-            ${entryIconHtml(myPick.entry_id)}
-            <strong>${escapeHtml(entryName(myPick.entry_id))}</strong>
-          </div>
-        </div>
-        <div class="cpb-right">
-          <div class="cpb-deadline"${targetAttr}>
-            <div class="cpb-deadline-label">Locks in</div>
-            <div class="cpb-deadline-time">${cd || 'Soon'}</div>
-          </div>
-          <button class="btn ghost" data-change-pick="${bracket.id}" type="button">Change pick</button>
-        </div>
-      </section>`;
-  }
 
   return `
     <section class="champion-pick-banner expanded">
@@ -495,6 +626,35 @@ function renderChampionPickInline(bracket) {
         `).join('')}
       </div>
     </section>`;
+}
+
+function renderChampionPickCard(bracket) {
+  if (!canStillPickChampion(bracket)) return '';
+  const myPick = state.myChampionPicks[bracket.id];
+  const isChanging = state.changingPickFor === bracket.id;
+  // Only show the compact card when picked AND not currently changing (grid is showing instead)
+  if (!myPick || isChanging) return '';
+
+  const cd = bracket.champion_picks_close_at
+    ? formatCountdown(bracket.champion_picks_close_at)
+    : null;
+  const targetAttr = bracket.champion_picks_close_at
+    ? ` data-countdown-target="${bracket.champion_picks_close_at}"`
+    : '';
+
+  return `
+    <aside class="champion-pick-card">
+      <div class="cpc-label">Your champion pick</div>
+      <div class="cpc-pick">
+        ${entryIconHtml(myPick.entry_id)}
+        <strong>${escapeHtml(entryName(myPick.entry_id))}</strong>
+      </div>
+      <div class="cpc-deadline"${targetAttr}>
+        <span class="cpc-deadline-label">Locks in</span>
+        <span class="cpc-deadline-time">${cd || 'Soon'}</span>
+      </div>
+      <button class="btn ghost cpc-change" data-change-pick="${bracket.id}" type="button">Change pick</button>
+    </aside>`;
 }
 
 function renderChampionPickScreen(bracket) {
@@ -594,15 +754,48 @@ function renderBracketView(bracket) {
 
   return `
     ${renderHero(bracket, heroOpts)}
-    ${renderChampionPickInline(bracket)}
+    ${renderChampionPickGrid(bracket)}
+    ${renderLockBanner(bracket)}
     <div class="main-area">
       <div class="bracket-wrap">
         <div class="bracket-inner">
           ${rounds.map((r, idx) => renderRoundColumn(r, idx === 4)).join('')}
         </div>
       </div>
-      ${renderStandings()}
+      <div class="sidebar-stack">
+        ${renderChampionPickCard(bracket)}
+        ${renderStandings()}
+      </div>
     </div>`;
+}
+
+function renderLockBanner(bracket) {
+  const openRound = currentOpenRound(bracket.id);
+  if (!openRound) return '';
+  const matchups = state.matchups[openRound.id] || [];
+  if (matchups.length === 0) return '';
+
+  const isLocked = !!state.myLocks[openRound.id];
+  const myVotedCount = matchups.filter(m => state.myVotes[m.id]).length;
+  const total = matchups.length;
+
+  if (isLocked) {
+    return `
+      <section class="lock-banner locked">
+        <span>🔒 Your votes for <strong>${escapeHtml(openRound.name)}</strong> are locked — tallies revealed below.</span>
+      </section>`;
+  }
+  if (myVotedCount < total) {
+    return `
+      <section class="lock-banner partial">
+        <span><strong>${myVotedCount}/${total}</strong> votes cast for ${escapeHtml(openRound.name)} · finish voting to unlock the "Lock in" button.</span>
+      </section>`;
+  }
+  return `
+    <section class="lock-banner ready">
+      <span><strong>All ${total} votes in.</strong> Lock in your picks for ${escapeHtml(openRound.name)} to reveal live tallies — you won't be able to change votes after.</span>
+      <button class="btn lime" data-lock-round="${openRound.id}" data-lock-round-name="${escapeHtml(openRound.name)}" type="button">Lock in my votes</button>
+    </section>`;
 }
 
 function renderRoundColumn(round, isFinal) {
@@ -630,12 +823,42 @@ function renderMatchup(matchup, round, isFinal) {
   const b = matchup.entry_b_id;
   const myVote = state.myVotes[matchup.id];
   const tally = state.tallies[matchup.id];
+  const isLockedForMe = round.status === 'open' && !!state.myLocks[round.id];
   const isPending = round.status === 'pending' || (!a && !b);
-  const isOpen = round.status === 'open' && a && b;
+  const isOpen = round.status === 'open' && a && b && !isLockedForMe;
   const isClosed = round.status === 'closed';
   const winnerId = matchup.winner_entry_id;
   const myPickWon = myVote && winnerId && myVote.voted_entry_id === winnerId;
   const isTie = matchup.is_tie && !winnerId;
+
+  const votesA = tally?.votes_a || 0;
+  const votesB = tally?.votes_b || 0;
+  const totalVotes = votesA + votesB;
+  const pctA = totalVotes ? Math.round(100 * votesA / totalVotes) : 0;
+  const pctB = totalVotes ? Math.round(100 * votesB / totalVotes) : 0;
+
+  if (isLockedForMe) {
+    const aPicked = myVote?.voted_entry_id === a;
+    const bPicked = myVote?.voted_entry_id === b;
+    return `
+      <div class="matchup-wrap">
+        <div class="matchup voted locked">
+          <div class="ribbon">🔒 Locked in</div>
+          <div class="slot ${aPicked ? 'picked' : ''}">
+            <div class="seed">${entrySeed(a)}</div>
+            ${entryIconHtml(a)}
+            <div class="name">${escapeHtml(entryName(a))}</div>
+            <div class="meta">${votesA} · ${pctA}%</div>
+          </div>
+          <div class="slot ${bPicked ? 'picked' : ''}">
+            <div class="seed">${entrySeed(b)}</div>
+            ${entryIconHtml(b)}
+            <div class="name">${escapeHtml(entryName(b))}</div>
+            <div class="meta">${votesB} · ${pctB}%</div>
+          </div>
+        </div>
+      </div>`;
+  }
 
   if (isPending) {
     return `
@@ -683,11 +906,6 @@ function renderMatchup(matchup, round, isFinal) {
       </div>`;
   }
 
-  const votesA = tally?.votes_a || 0;
-  const votesB = tally?.votes_b || 0;
-  const total = votesA + votesB;
-  const pctA = total ? Math.round(100 * votesA / total) : 0;
-  const pctB = total ? Math.round(100 * votesB / total) : 0;
   const aWin = winnerId === a;
   const bWin = winnerId === b;
 
@@ -714,7 +932,7 @@ function renderMatchup(matchup, round, isFinal) {
 
   return `
     <div class="matchup-wrap">
-      <div class="matchup closed ${myPickWon ? 'point-earned' : ''}">
+      <div class="matchup closed">
         <div class="slot ${aWin ? 'winner' : 'loser'}">
           <div class="seed">${entrySeed(a)}</div>
           ${entryIconHtml(a)}
@@ -728,6 +946,7 @@ function renderMatchup(matchup, round, isFinal) {
           <div class="meta">${votesB} · ${pctB}%</div>
         </div>
       </div>
+      ${myPickWon ? '<div class="point-badge" aria-label="You earned a point">+1</div>' : ''}
     </div>`;
 }
 
@@ -774,6 +993,11 @@ function attachAppHandlers() {
     el.addEventListener('click', () => {
       state.changingPickFor = el.dataset.changePick;
       render();
+    });
+  });
+  document.querySelectorAll('[data-lock-round]').forEach(el => {
+    el.addEventListener('click', () => {
+      lockMyVotesForRound(el.dataset.lockRound, el.dataset.lockRoundName);
     });
   });
   document.querySelectorAll('[data-vote-matchup]').forEach(el => {
