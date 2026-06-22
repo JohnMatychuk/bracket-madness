@@ -463,10 +463,15 @@ function renderApp() {
   return renderTopNav() + renderBracketTabs() + renderActiveBracket();
 }
 
+function anyScoresVisible() {
+  return state.leaderboard.some(r => (r.total_points || 0) > 0);
+}
+
 function renderTopNav() {
   const name = state.player?.display_name || state.user.email;
   const score = myScore();
   const champs = myChampionsAlive();
+  const scoresOn = anyScoresVisible();
   let champText;
   if (champs.picked === 0) champText = 'No champ picks';
   else if (champs.alive > 0) champText = `${champs.alive} champ${champs.alive === 1 ? '' : 's'} alive`;
@@ -484,7 +489,7 @@ function renderTopNav() {
           <div class="pmeta">
             <div class="plabel">${escapeHtml(name)}</div>
             <div class="pvalue">
-              <span class="pscore">${score} pts</span>
+              <span class="pscore">${scoresOn ? `${score} pts` : 'Locks pending'}</span>
               <span class="pdot">·</span>
               <span>${champText}</span>
             </div>
@@ -769,7 +774,20 @@ function renderBracketView(bracket) {
     </div>`;
 }
 
+function userMissedBracket(bracket) {
+  const rounds = bracketRounds(bracket.id);
+  const r1 = rounds.find(r => r.round_number === 1);
+  if (!r1 || r1.status !== 'closed') return false;
+  return !state.myLocks[r1.id];
+}
+
 function renderLockBanner(bracket) {
+  if (userMissedBracket(bracket)) {
+    return `
+      <section class="lock-banner partial">
+        <span><strong>You missed the initial voting period.</strong> Round 1 closed before you locked in your picks for this bracket — you can follow along, but you won't be counted in the standings.</span>
+      </section>`;
+  }
   const openRound = currentOpenRound(bracket.id);
   if (!openRound) return '';
   const matchups = state.matchups[openRound.id] || [];
@@ -951,13 +969,20 @@ function renderMatchup(matchup, round, isFinal) {
 }
 
 function renderStandings() {
+  const scoresOn = anyScoresVisible();
+  if (!scoresOn) {
+    return `
+      <aside class="standings">
+        <h2>Standings</h2>
+        <div class="h2-sub">Scores reveal once a round is fully locked by everyone.</div>
+      </aside>`;
+  }
   const myId = state.player?.id;
   const rows = state.leaderboard.slice(0, 12);
   return `
     <aside class="standings">
       <h2>Standings</h2>
       <div class="h2-sub">Across all brackets · live</div>
-      ${rows.length === 0 ? '<div style="font-size:13px;color:var(--dark-gray);">No scores yet.</div>' : ''}
       ${rows.map((r, i) => `
         <div class="leader-row ${r.player_id === myId ? 'you' : ''} ${i === 0 ? 'medal-1' : ''}">
           <div class="rank">${i + 1}</div>

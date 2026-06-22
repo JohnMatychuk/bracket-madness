@@ -165,18 +165,21 @@ a:hover { text-decoration: underline; }
    HERO / PAGE HEADER
    ============================================================ */
 .hero {
-  padding: 20px 32px 16px;
+  padding: 10px 32px 12px;
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   justify-content: space-between;
   gap: 24px;
   flex-wrap: wrap;
 }
 .hero h1 {
   font-weight: 800;
-  font-size: 30px;
+  font-size: 28px;
   line-height: 1.05;
   letter-spacing: -0.5px;
+}
+.hero .tagline {
+  margin-top: 4px;
 }
 .hero h1 .accent { color: var(--milan-blue); }
 .hero h1 .lime-dot {
