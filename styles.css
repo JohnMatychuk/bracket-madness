@@ -861,6 +861,16 @@ a:hover { text-decoration: underline; }
 .standings-page {
   padding: 0 32px 48px;
 }
+.standings-section-heading {
+  font-weight: 800;
+  font-size: 13px;
+  letter-spacing: 1.8px;
+  text-transform: uppercase;
+  color: var(--dark-gray);
+  margin: 22px 0 10px;
+}
+.standings-section-heading:first-of-type { margin-top: 8px; }
+[data-theme="dark"] .standings-section-heading { color: #92A4AB; }
 .standings-table {
   width: 100%;
   background: white;

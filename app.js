@@ -22,6 +22,7 @@ const state = {
   myLocks: {},
   tallies: {},
   leaderboard: [],
+  bracketLeaderboards: {},
   activeBracketId: null,
   signinMode: 'signin',
   signinError: null,
@@ -167,6 +168,15 @@ async function loadData() {
     }
   });
   await Promise.all(tallyPromises);
+
+  // Per-bracket leaderboards (sidebar uses these — overall stays in state.leaderboard for player chip)
+  state.bracketLeaderboards = {};
+  const boardPromises = state.brackets.map(b =>
+    sb.rpc('get_bracket_leaderboard', { p_bracket_id: b.id }).then(({ data }) => {
+      state.bracketLeaderboards[b.id] = data || [];
+    })
+  );
+  await Promise.all(boardPromises);
 
   if (!state.activeBracketId && state.brackets.length > 0) {
     state.activeBracketId = state.brackets[0].id;
@@ -467,6 +477,11 @@ function anyScoresVisible() {
   return state.leaderboard.some(r => (r.total_points || 0) > 0);
 }
 
+function anyScoresVisibleInBracket(bracketId) {
+  const board = state.bracketLeaderboards[bracketId] || [];
+  return board.some(r => (r.total_points || 0) > 0);
+}
+
 function renderTopNav() {
   const name = state.player?.display_name || state.user.email;
   const score = myScore();
@@ -552,36 +567,48 @@ function renderStandingsPage() {
     <section class="hero">
       <div>
         <h1>Final <span class="accent">Standings</span><span class="lime-dot"></span></h1>
-        <div class="tagline">${allComplete ? 'All' : completedBrackets.length + ' of ' + state.brackets.length} brackets complete · ${board.length} player${board.length === 1 ? '' : 's'}</div>
+        <div class="tagline">${allComplete ? 'All' : completedBrackets.length + ' of ' + state.brackets.length} brackets complete</div>
       </div>
     </section>
     <div class="standings-page">
-      ${board.length === 0 ? '<div class="empty-state"><p>No standings yet.</p></div>' : `
-      <table class="standings-table">
-        <thead>
-          <tr>
-            <th>#</th>
-            <th>Player</th>
-            <th class="num">Total</th>
-            <th class="num">Rounds</th>
-            <th class="num">Champion Bonus</th>
-            <th>Champions Alive</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${board.map((r, i) => `
-            <tr class="${r.player_id === myId ? 'you' : ''} ${i === 0 ? 'first' : ''}">
-              <td class="rank">${i + 1}</td>
-              <td class="player">${r.player_id === myId ? 'You' : escapeHtml(r.display_name)}</td>
-              <td class="num total">${r.total_points}</td>
-              <td class="num">${r.round_points}</td>
-              <td class="num">${r.champion_bonus}</td>
-              <td>${r.champions_alive}/${r.champions_picked || 0}</td>
-            </tr>
-          `).join('')}
-        </tbody>
-      </table>`}
+      <h2 class="standings-section-heading">Overall · across all brackets</h2>
+      ${renderStandingsTable(board, myId)}
+      ${state.brackets.map(b => `
+        <h2 class="standings-section-heading">${escapeHtml(b.name)}</h2>
+        ${renderStandingsTable(state.bracketLeaderboards[b.id] || [], myId)}
+      `).join('')}
     </div>`;
+}
+
+function renderStandingsTable(board, myId) {
+  if (!board.length) {
+    return '<div class="empty-state" style="padding:24px;"><p>No standings yet.</p></div>';
+  }
+  return `
+    <table class="standings-table">
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>Player</th>
+          <th class="num">Total</th>
+          <th class="num">Rounds</th>
+          <th class="num">Champion Bonus</th>
+          <th>Champions Alive</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${board.map((r, i) => `
+          <tr class="${r.player_id === myId ? 'you' : ''} ${i === 0 ? 'first' : ''}">
+            <td class="rank">${i + 1}</td>
+            <td class="player">${r.player_id === myId ? 'You' : escapeHtml(r.display_name)}</td>
+            <td class="num total">${r.total_points}</td>
+            <td class="num">${r.round_points}</td>
+            <td class="num">${r.champion_bonus}</td>
+            <td>${r.champions_alive}/${r.champions_picked || 0}</td>
+          </tr>
+        `).join('')}
+      </tbody>
+    </table>`;
 }
 
 function canStillPickChampion(bracket) {
@@ -769,7 +796,7 @@ function renderBracketView(bracket) {
       </div>
       <div class="sidebar-stack">
         ${renderChampionPickCard(bracket)}
-        ${renderStandings()}
+        ${renderStandings(bracket)}
       </div>
     </div>`;
 }
@@ -970,21 +997,30 @@ function renderMatchup(matchup, round, isFinal) {
     </div>`;
 }
 
-function renderStandings() {
-  const scoresOn = anyScoresVisible();
-  if (!scoresOn) {
+function renderStandings(bracket) {
+  if (!bracket) {
+    // No bracket context — show empty placeholder
     return `
       <aside class="standings">
         <h2>Standings</h2>
-        <div class="h2-sub">Scores reveal once a round is fully locked by everyone.</div>
+        <div class="h2-sub">Open a bracket to see its standings.</div>
+      </aside>`;
+  }
+  const scoresOn = anyScoresVisibleInBracket(bracket.id);
+  if (!scoresOn) {
+    return `
+      <aside class="standings">
+        <h2>${escapeHtml(bracket.name)} standings</h2>
+        <div class="h2-sub">Scores reveal once a round closes.</div>
       </aside>`;
   }
   const myId = state.player?.id;
-  const rows = state.leaderboard.slice(0, 12);
+  const board = state.bracketLeaderboards[bracket.id] || [];
+  const rows = board.slice(0, 12);
   return `
     <aside class="standings">
-      <h2>Standings</h2>
-      <div class="h2-sub">Across all brackets · live</div>
+      <h2>${escapeHtml(bracket.name)} standings</h2>
+      <div class="h2-sub">This bracket · live</div>
       ${rows.map((r, i) => `
         <div class="leader-row ${r.player_id === myId ? 'you' : ''} ${i === 0 ? 'medal-1' : ''}">
           <div class="rank">${i + 1}</div>
