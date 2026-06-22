@@ -526,12 +526,10 @@ function renderBracketTabs() {
           <span class="pill">${bracketStateLabel(b)}</span>
         </button>
       `).join('')}
-      ${anyComplete ? `
-        <button class="bracket-tab ${state.activeBracketId === 'standings' ? 'active' : ''}" data-bracket-tab="standings" type="button">
-          Final Standings
-          <span class="pill">🏆</span>
-        </button>
-      ` : ''}
+      <button class="bracket-tab ${state.activeBracketId === 'standings' ? 'active' : ''}" data-bracket-tab="standings" type="button">
+        Standings
+        <span class="pill">${anyComplete ? '🏆' : 'LIVE'}</span>
+      </button>
     </nav>`;
 }
 
@@ -563,11 +561,12 @@ function renderStandingsPage() {
   const allComplete = completedBrackets.length === state.brackets.length;
   const myId = state.player?.id;
 
+  const heading = allComplete ? 'Final' : 'Live';
   return `
     <section class="hero">
       <div>
-        <h1>Final <span class="accent">Standings</span><span class="lime-dot"></span></h1>
-        <div class="tagline">${allComplete ? 'All' : completedBrackets.length + ' of ' + state.brackets.length} brackets complete</div>
+        <h1>${heading} <span class="accent">Standings</span><span class="lime-dot"></span></h1>
+        <div class="tagline">${allComplete ? 'All' : completedBrackets.length + ' of ' + state.brackets.length} bracket${state.brackets.length === 1 ? '' : 's'} complete</div>
       </div>
     </section>
     <div class="standings-page">
