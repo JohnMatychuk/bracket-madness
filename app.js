@@ -282,8 +282,9 @@ function formatCountdown(target) {
   const h = Math.floor((ms % 86400000) / 3600000);
   const m = Math.floor((ms % 3600000) / 60000);
   const s = Math.floor((ms % 60000) / 1000);
-  if (d > 0) return `${d}d ${h.toString().padStart(2, '0')}h ${m.toString().padStart(2, '0')}m`;
-  return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+  const pad = (n) => n.toString().padStart(2, '0');
+  if (d > 0) return `${d}d ${pad(h)}h ${pad(m)}m ${pad(s)}s`;
+  return `${pad(h)}:${pad(m)}:${pad(s)}`;
 }
 
 // ============================================================
@@ -792,10 +793,10 @@ setInterval(async () => {
 
 // Lightweight per-second countdown updates (no full re-render)
 setInterval(() => {
-  document.querySelectorAll('.countdown[data-countdown-target]').forEach(el => {
+  document.querySelectorAll('[data-countdown-target]').forEach(el => {
     const target = el.dataset.countdownTarget;
     const cd = formatCountdown(target);
-    const timeEl = el.querySelector('.time');
+    const timeEl = el.querySelector('.time, .cpb-deadline-time');
     if (timeEl) timeEl.textContent = cd || '—';
     if (cd && new Date(target) - new Date() < 60 * 60 * 1000) {
       el.classList.add('urgent');

@@ -215,6 +215,7 @@ a:hover { text-decoration: underline; }
   margin-top: 6px;
   font-variant-numeric: tabular-nums;
   letter-spacing: -0.5px;
+  min-width: 200px;
 }
 .countdown .round {
   font-size: 12px;
@@ -669,6 +670,8 @@ a:hover { text-decoration: underline; }
   color: var(--milan-blue);
   font-variant-numeric: tabular-nums;
   margin-top: 2px;
+  min-width: 130px;
+  text-align: right;
 }
 .champion-pick-banner.expanded .cpb-header {
   display: flex;
