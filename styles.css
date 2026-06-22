@@ -953,6 +953,78 @@ a:hover { text-decoration: underline; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 /* ============================================================
+   ONBOARDING MODAL
+   ============================================================ */
+.onboarding-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,18,28,0.75);
+  display: grid;
+  place-items: center;
+  z-index: 100;
+  padding: 24px;
+  backdrop-filter: blur(2px);
+  animation: bm-enter 240ms ease-out;
+}
+.onboarding-card {
+  background: white;
+  border-radius: 14px;
+  max-width: 520px;
+  width: 100%;
+  max-height: 92vh;
+  overflow-y: auto;
+  padding: 28px 30px 24px;
+  box-shadow: 0 24px 64px rgba(0,0,0,0.4);
+}
+.onboarding-eyebrow {
+  font-size: 11px;
+  letter-spacing: 1.6px;
+  font-weight: 800;
+  text-transform: uppercase;
+  color: var(--dark-gray);
+}
+.onboarding-title {
+  font-size: 30px;
+  font-weight: 800;
+  color: var(--milan-blue);
+  margin: 2px 0 6px;
+  letter-spacing: -0.5px;
+}
+.onboarding-sub {
+  font-size: 14px;
+  color: var(--dark-gray);
+  margin-bottom: 18px;
+}
+.onboarding-list {
+  margin: 0 0 18px;
+  padding-left: 22px;
+  color: var(--dark-teal);
+  font-size: 14px;
+  line-height: 1.55;
+}
+.onboarding-list li { margin-bottom: 14px; }
+.onboarding-list li strong { color: var(--dark-teal); font-weight: 800; }
+.onboarding-table {
+  margin: 8px 0 0 0;
+  font-size: 13px;
+  border-collapse: collapse;
+}
+.onboarding-table td { padding: 3px 14px 3px 0; color: var(--dark-gray); }
+.onboarding-table td:last-child { font-weight: 800; color: var(--milan-blue); font-variant-numeric: tabular-nums; }
+.onboarding-cta {
+  width: 100%;
+  padding: 13px;
+  font-size: 13px;
+  letter-spacing: 1.2px;
+}
+[data-theme="dark"] .onboarding-card { background: #112E38; box-shadow: 0 24px 64px rgba(0,0,0,0.6); }
+[data-theme="dark"] .onboarding-eyebrow { color: #92A4AB; }
+[data-theme="dark"] .onboarding-sub { color: #92A4AB; }
+[data-theme="dark"] .onboarding-list,
+[data-theme="dark"] .onboarding-list li strong { color: #E8F3F7; }
+[data-theme="dark"] .onboarding-table td { color: #92A4AB; }
+
+/* ============================================================
    FOOTER
    ============================================================ */
 .footer-note {

@@ -29,6 +29,7 @@ const state = {
   signinInfo: null,
   signinBusy: false,
   changingPickFor: null,
+  showOnboarding: false,
 };
 
 // ============================================================
@@ -60,6 +61,7 @@ async function bootstrap() {
   if (session) {
     state.user = session.user;
     await loadData();
+    try { state.showOnboarding = !localStorage.getItem('bm-onboarding-seen'); } catch {}
   }
   state.ready = true;
   render();
@@ -470,7 +472,63 @@ function attachSigninHandlers() {
 }
 
 function renderApp() {
-  return renderTopNav() + renderBracketTabs() + renderActiveBracket();
+  return renderTopNav() + renderBracketTabs() + renderActiveBracket() + (state.showOnboarding ? renderOnboardingModal() : '');
+}
+
+function renderOnboardingModal() {
+  return `
+    <div class="onboarding-overlay" id="onboarding-overlay">
+      <div class="onboarding-card">
+        <div class="onboarding-eyebrow">Welcome to</div>
+        <h2 class="onboarding-title">Bracket Madness</h2>
+        <p class="onboarding-sub">Quick rules so you can rack up points.</p>
+
+        <ol class="onboarding-list">
+          <li>
+            <strong>Vote each round.</strong> Whichever entry gets the most votes from the team advances to the next round.
+          </li>
+          <li>
+            <strong>Bigger points in later rounds.</strong> Each correct pick is worth more as the bracket narrows:
+            <table class="onboarding-table">
+              <tr><td>Round of 32</td><td>100 pts</td></tr>
+              <tr><td>Round of 16</td><td>200 pts</td></tr>
+              <tr><td>Quarterfinals</td><td>400 pts</td></tr>
+              <tr><td>Semifinals</td><td>800 pts</td></tr>
+              <tr><td>Final</td><td>1,600 pts</td></tr>
+            </table>
+          </li>
+          <li>
+            <strong>Upset bonus.</strong> Correctly call an upset (the lower seed wins) and earn extra points — the bigger the seed gap, the bigger the reward, multiplied by the round.
+          </li>
+          <li>
+            <strong>Pick a champion before round 1.</strong> Earn bonus points based on how far your champion makes it:
+            <table class="onboarding-table">
+              <tr><td>Reaches Round of 16</td><td>+50</td></tr>
+              <tr><td>Reaches Quarterfinals</td><td>+150</td></tr>
+              <tr><td>Reaches Semifinals</td><td>+400</td></tr>
+              <tr><td>Reaches Final</td><td>+1,000</td></tr>
+              <tr><td>Wins it all</td><td>+2,500</td></tr>
+            </table>
+          </li>
+          <li>
+            <strong>Lock in to peek.</strong> Voted on every matchup in a round? Click <em>Lock in my votes</em> to freeze your picks and reveal live tallies — no more changes after that.
+          </li>
+        </ol>
+
+        <button class="btn onboarding-cta" id="onboarding-dismiss" type="button">Got it — let's play</button>
+      </div>
+    </div>`;
+}
+
+function dismissOnboarding() {
+  state.showOnboarding = false;
+  try { localStorage.setItem('bm-onboarding-seen', '1'); } catch {}
+  render();
+}
+
+function reopenOnboarding() {
+  state.showOnboarding = true;
+  render();
 }
 
 function anyScoresVisible() {
@@ -992,7 +1050,7 @@ function renderMatchup(matchup, round, isFinal) {
           <div class="meta">${votesB} · ${pctB}%</div>
         </div>
       </div>
-      ${myPickWon ? '<div class="point-badge" aria-label="You earned a point">+1</div>' : ''}
+      ${myPickWon ? '<div class="point-badge" aria-label="You picked the winner">✓</div>' : ''}
     </div>`;
 }
 
@@ -1038,7 +1096,7 @@ function renderStandings(bracket) {
 function renderFooter() {
   return `
     <div class="footer-note">
-      Milan Bracket Madness · <a href="admin.html">Admin</a>
+      Milan Bracket Madness · <a href="#" id="how-it-works-link">How it works</a> · <a href="admin.html">Admin</a>
     </div>`;
 }
 
@@ -1064,6 +1122,14 @@ function attachAppHandlers() {
   });
   document.querySelectorAll('[data-vote-matchup]').forEach(el => {
     el.addEventListener('click', () => castVote(el.dataset.voteMatchup, el.dataset.voteEntry));
+  });
+  document.getElementById('onboarding-dismiss')?.addEventListener('click', dismissOnboarding);
+  document.getElementById('onboarding-overlay')?.addEventListener('click', (e) => {
+    if (e.target.id === 'onboarding-overlay') dismissOnboarding();
+  });
+  document.getElementById('how-it-works-link')?.addEventListener('click', (e) => {
+    e.preventDefault();
+    reopenOnboarding();
   });
 }
 
