@@ -1069,7 +1069,7 @@ a:hover { text-decoration: underline; }
   user-select: none;
   transition: background 0.12s, border-color 0.12s, opacity 0.12s;
 }
-.entry-item.locked { grid-template-columns: 22px 32px 1fr; }
+.entry-item.locked { grid-template-columns: 22px 32px 16px 1fr; }
 .entry-item.locked { cursor: default; }
 .entry-item:not(.locked):hover { background: var(--pale-blue); }
 .entry-item .drag-handle {

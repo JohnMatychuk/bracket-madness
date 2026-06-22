@@ -388,6 +388,13 @@ async function resolveTie(matchupId, winnerEntryId) {
   msg('Tie resolved.');
 }
 
+async function toggleBracketVisibility(bracketId, makeVisible) {
+  const { error } = await sb.from('brackets').update({ is_visible: makeVisible }).eq('id', bracketId);
+  if (error) return msg('Could not update visibility: ' + error.message, 'error');
+  await loadData(); render();
+  msg(makeVisible ? 'Bracket is now visible to players.' : 'Bracket hidden from players.');
+}
+
 async function deleteBracket(bracketId) {
   const b = state.brackets.find(x => x.id === bracketId);
   if (!b) return;
@@ -586,17 +593,24 @@ function renderBracketCard(bracket) {
   const entries = state.entriesByBracket[bracket.id] || [];
   const rounds = state.rounds[bracket.id] || [];
   const ties = getUnresolvedTies(bracket.id);
+  const isVisible = bracket.is_visible !== false;
+  const visibilityLabel = isVisible ? 'Hide from players' : 'Show to players';
   const headerActions = `
+    <button class="btn ghost" data-visibility="${bracket.id}" data-make-visible="${!isVisible}" type="button">${visibilityLabel}</button>
     <button class="btn ghost" data-toggle="${bracket.id}" type="button">${expanded ? 'Collapse' : 'Manage'}</button>
     <button class="btn danger" data-delete-bracket="${bracket.id}" type="button">Delete</button>`;
   return `
     <div class="admin-section">
       <div class="bracket-card-head" style="margin-bottom:0;">
         <div>
-          <h2 style="margin-bottom:4px;">${escapeHtml(bracket.name)} <span class="bracket-status-pill ${bracket.status}">${escapeHtml(bracket.status)}</span></h2>
+          <h2 style="margin-bottom:4px;">
+            ${escapeHtml(bracket.name)}
+            <span class="bracket-status-pill ${bracket.status}">${escapeHtml(bracket.status)}</span>
+            ${!isVisible ? '<span class="bracket-status-pill" style="background:var(--red); color:white;">HIDDEN</span>' : ''}
+          </h2>
           <div class="sub" style="margin-bottom:0;">${entries.length}/32 entries · ${rounds.length}/5 rounds${ties.length ? ` · <strong style="color:var(--red);">${ties.length} tie${ties.length===1?'':'s'} to resolve</strong>` : ''}</div>
         </div>
-        <div style="display:flex; gap:8px;">${headerActions}</div>
+        <div style="display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end;">${headerActions}</div>
       </div>
       ${expanded ? renderBracketDetail(bracket) : ''}
     </div>`;
@@ -622,23 +636,23 @@ function renderEntriesSection(bracket, entries) {
       <textarea id="entries-${bracket.id}" placeholder="Monopoly&#10;Scrabble&#10;Chess&#10;…"></textarea>
       <button class="btn" data-save-entries="${bracket.id}" type="button">Save entries &amp; generate bracket</button>`;
   }
-  const locked = !['setup', 'champion_picks'].includes(bracket.status);
+  const seedingLocked = !['setup', 'champion_picks'].includes(bracket.status);
   const sorted = entries.slice().sort((a, b) => a.seed - b.seed);
   return `
-    <h3>1. Entries ${locked ? '(locked — voting started)' : '(drag to reorder, click icon slot to upload)'}</h3>
-    <p class="sub">${locked
-      ? 'Voting has started, so seeds and icons are locked. Reordering would invalidate cast votes.'
+    <h3>1. Entries ${seedingLocked ? '(seeds locked — voting started)' : '(drag to reorder, click icon slot to upload)'}</h3>
+    <p class="sub">${seedingLocked
+      ? 'Voting has started, so seeds are locked (reordering would invalidate cast votes). You can still update entry icons at any time.'
       : 'Top of the list is seed 1. Drag the ⋮⋮ handle to reseed (Round 1 matchups repair automatically). Click any icon slot to upload an image — max 2MB, square images look best.'}</p>
     <div class="entries-grid" data-entries-bracket="${bracket.id}">
       ${sorted.map(e => `
-        <div class="entry-item ${locked ? 'locked' : ''}" data-entry-id="${e.id}">
-          ${locked ? '' : '<span class="drag-handle" draggable="true" aria-hidden="true" title="Drag to reorder">⋮⋮</span>'}
+        <div class="entry-item ${seedingLocked ? 'locked' : ''}" data-entry-id="${e.id}">
+          ${seedingLocked ? '' : '<span class="drag-handle" draggable="true" aria-hidden="true" title="Drag to reorder">⋮⋮</span>'}
           <span class="entry-seed">${e.seed}</span>
-          <label class="entry-icon-slot" ${locked ? '' : `title="${e.icon ? 'Click to replace image' : 'Click to upload an image'}"`}>
+          <label class="entry-icon-slot" title="${e.icon ? 'Click to replace image' : 'Click to upload an image'}">
             ${renderEntryIconPreview(e)}
-            ${locked ? '' : `<input type="file" accept="image/*" hidden data-upload-entry="${e.id}">`}
+            <input type="file" accept="image/*" hidden data-upload-entry="${e.id}">
           </label>
-          ${(!locked && e.icon) ? `<button class="entry-icon-clear" type="button" data-clear-entry="${e.id}" title="Clear icon" aria-label="Clear icon for ${escapeHtml(e.name)}">×</button>` : ''}
+          ${e.icon ? `<button class="entry-icon-clear" type="button" data-clear-entry="${e.id}" title="Clear icon" aria-label="Clear icon for ${escapeHtml(e.name)}">×</button>` : ''}
           <span class="entry-name">${escapeHtml(e.name)}</span>
         </div>
       `).join('')}
@@ -790,6 +804,13 @@ function attachAdminHandlers() {
 
   document.querySelectorAll('[data-delete-bracket]').forEach(el => {
     el.addEventListener('click', () => deleteBracket(el.dataset.deleteBracket));
+  });
+
+  document.querySelectorAll('[data-visibility]').forEach(el => {
+    el.addEventListener('click', () => {
+      const makeVisible = el.dataset.makeVisible === 'true';
+      toggleBracketVisibility(el.dataset.visibility, makeVisible);
+    });
   });
 
   document.querySelectorAll('[data-open-picks]').forEach(form => {
