@@ -66,8 +66,10 @@ async function bootstrap() {
     if (usedCache) {
       state.ready = true;
       render();
-      // Fire-and-render: kick off real load but don't block initial paint
-      safeLoadData().then((ok) => { if (ok) render(); });
+      // Fire-and-render: kick off real load but don't block initial paint.
+      // Always re-render — even on partial failure, any slice that succeeded
+      // (e.g. brackets after a cleanup/rebuild) should paint immediately.
+      safeLoadData().then(() => render());
     } else {
       await safeLoadData();
     }
@@ -131,16 +133,23 @@ let _consecutiveFailures = 0;
 
 // Slow-changing slices we cache to localStorage so the UI paints instantly on
 // next visit and the first network sync has nothing critical to render-block on.
+// We also cache the user's own votes/locks/champion picks — without these, a
+// slow cold-start sync leaves the UI showing "VOTE NOW" on already-voted
+// matchups, which leads to duplicate-insert collisions when the user clicks.
 const CACHE_KEY = 'bm-cache-v1';
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 function saveCacheSlices() {
   try {
     localStorage.setItem(CACHE_KEY, JSON.stringify({
       ts: Date.now(),
+      uid: state.user?.id || null,
       brackets: state.brackets,
       entries: state.entries,
       rounds: state.rounds,
       matchups: state.matchups,
+      myVotes: state.myVotes,
+      myLocks: state.myLocks,
+      myChampionPicks: state.myChampionPicks,
     }));
   } catch {}
 }
@@ -150,10 +159,17 @@ function loadCacheSlices() {
     if (!raw) return false;
     const obj = JSON.parse(raw);
     if (!obj || (Date.now() - obj.ts) > CACHE_TTL_MS) return false;
+    // User-scoped slices must only be restored for the same user
+    const sameUser = obj.uid && state.user && obj.uid === state.user.id;
     if (obj.brackets) state.brackets = obj.brackets;
     if (obj.entries) state.entries = obj.entries;
     if (obj.rounds) state.rounds = obj.rounds;
     if (obj.matchups) state.matchups = obj.matchups;
+    if (sameUser) {
+      if (obj.myVotes) state.myVotes = obj.myVotes;
+      if (obj.myLocks) state.myLocks = obj.myLocks;
+      if (obj.myChampionPicks) state.myChampionPicks = obj.myChampionPicks;
+    }
     return true;
   } catch { return false; }
 }
@@ -313,19 +329,27 @@ async function castVote(matchupId, entryId) {
   };
   render();
 
-  let res;
-  if (existing) {
-    res = await sb.from('votes').update({
+  // Upsert handles the "state.myVotes was stale and said no vote, but one
+  // actually exists in DB" case — which happens during slow cold-start syncs.
+  // Without this, the INSERT path collides with the existing row's unique
+  // (matchup_id, player_id) constraint and the user sees an RLS-looking error.
+  let res = await sb.from('votes').upsert({
+    matchup_id: matchupId,
+    voted_entry_id: entryId,
+    player_id: state.user.id,
+    updated_at: new Date().toISOString(),
+  }, { onConflict: 'matchup_id,player_id' });
+
+  // Belt-and-suspenders: if upsert somehow still hits the insert RLS path
+  // (older PostgREST behavior on duplicates), fall back to an explicit update.
+  if (res.error) {
+    const fallback = await sb.from('votes').update({
       voted_entry_id: entryId,
       updated_at: new Date().toISOString(),
     }).eq('matchup_id', matchupId).eq('player_id', state.user.id);
-  } else {
-    res = await sb.from('votes').insert({
-      matchup_id: matchupId,
-      voted_entry_id: entryId,
-      player_id: state.user.id,
-    });
+    if (!fallback.error) res = fallback;
   }
+
   if (res.error) {
     alert('Could not save your vote: ' + res.error.message);
     if (existing) state.myVotes[matchupId] = existing;
