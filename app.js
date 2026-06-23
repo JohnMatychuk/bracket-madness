@@ -30,6 +30,7 @@ const state = {
   signinBusy: false,
   changingPickFor: null,
   showOnboarding: false,
+  championPromptDismissed: {},
 };
 
 // ============================================================
@@ -60,7 +61,7 @@ async function bootstrap() {
   const { data: { session } } = await sb.auth.getSession();
   if (session) {
     state.user = session.user;
-    await loadData();
+    await safeLoadData();
     try { state.showOnboarding = !localStorage.getItem('bm-onboarding-seen'); } catch {}
   }
   state.ready = true;
@@ -69,7 +70,7 @@ async function bootstrap() {
   sb.auth.onAuthStateChange((event, session) => {
     state.user = session?.user || null;
     if (state.user) {
-      loadData().then(render);
+      safeLoadData().then(render);
     } else {
       Object.assign(state, {
         player: null, brackets: [], entries: {}, rounds: {}, matchups: {},
@@ -116,8 +117,12 @@ async function signOut() {
 // ============================================================
 // DATA LOADING
 // ============================================================
+let _loadInFlight = false;
+let _consecutiveFailures = 0;
+
 async function loadData() {
   if (!state.user) return;
+  if (_loadInFlight) return; // avoid overlapping fetches when user is active
 
   const [
     playerRes, bracketsRes, entriesRes, roundsRes, matchupsRes,
@@ -187,6 +192,54 @@ async function loadData() {
   }
 }
 
+function showSyncToast(failureCount) {
+  let toast = document.getElementById('sync-toast');
+  if (!toast) {
+    toast = document.createElement('div');
+    toast.id = 'sync-toast';
+    toast.className = 'sync-toast';
+    toast.innerHTML = `
+      <span class="sync-toast-text">Couldn't sync — using last known data.</span>
+      <button class="sync-toast-retry" type="button">Retry now</button>`;
+    document.body.appendChild(toast);
+    toast.querySelector('.sync-toast-retry')?.addEventListener('click', async () => {
+      toast.classList.add('retrying');
+      const ok = await safeLoadData();
+      if (ok) { hideSyncToast(); render(); }
+      else toast.classList.remove('retrying');
+    });
+  }
+  if (failureCount >= 3) {
+    toast.querySelector('.sync-toast-text').textContent =
+      `Still can't sync (${failureCount} attempts). Showing last known data.`;
+  }
+  toast.classList.add('visible');
+}
+
+function hideSyncToast() {
+  document.getElementById('sync-toast')?.classList.remove('visible');
+}
+
+// Wraps loadData with a concurrency guard + error handling so the UI never goes blank.
+// On error, last successful state is retained and a small non-blocking toast appears.
+async function safeLoadData() {
+  if (_loadInFlight) return false;
+  _loadInFlight = true;
+  try {
+    await loadData();
+    _consecutiveFailures = 0;
+    hideSyncToast();
+    return true;
+  } catch (err) {
+    _consecutiveFailures++;
+    console.warn('[bracket-madness] sync failed:', err?.message || err);
+    showSyncToast(_consecutiveFailures);
+    return false;
+  } finally {
+    _loadInFlight = false;
+  }
+}
+
 // ============================================================
 // ACTIONS
 // ============================================================
@@ -218,7 +271,7 @@ async function castVote(matchupId, entryId) {
     if (existing) state.myVotes[matchupId] = existing;
     else delete state.myVotes[matchupId];
   }
-  await loadData();
+  await safeLoadData();
   render();
 }
 
@@ -242,7 +295,7 @@ async function submitChampionPick(bracketId, entryId) {
     return;
   }
   state.changingPickFor = null;
-  await loadData();
+  await safeLoadData();
   render();
 }
 
@@ -258,7 +311,7 @@ async function lockMyVotesForRound(roundId, roundName) {
     alert('Could not lock in: ' + error.message);
     return;
   }
-  await loadData();
+  await safeLoadData();
   render();
 }
 
@@ -472,7 +525,49 @@ function attachSigninHandlers() {
 }
 
 function renderApp() {
-  return renderTopNav() + renderBracketTabs() + renderActiveBracket() + (state.showOnboarding ? renderOnboardingModal() : '');
+  let modal = '';
+  if (state.showOnboarding) {
+    modal = renderOnboardingModal();
+  } else {
+    const ab = activeBracket();
+    if (ab && shouldShowChampionModal(ab)) {
+      modal = renderChampionPickModal(ab);
+    }
+  }
+  return renderTopNav() + renderBracketTabs() + renderActiveBracket() + modal;
+}
+
+function renderChampionPickModal(bracket) {
+  const entries = Object.values(state.entries)
+    .filter(e => e.bracket_id === bracket.id)
+    .sort((a, b) => a.seed - b.seed);
+  if (entries.length === 0) return '';
+
+  return `
+    <div class="onboarding-overlay" id="champion-modal-overlay">
+      <div class="onboarding-card">
+        <div class="onboarding-eyebrow">${escapeHtml(bracket.name)}</div>
+        <h2 class="onboarding-title">Pick your champion</h2>
+        <p class="onboarding-key">
+          Nice — your Round of 32 votes are in. Now pick the entry you think will <strong>win the whole bracket</strong>. Bonus points if your pick advances: +50 R16, +150 QF, +400 SF, +1,000 Final, <strong>+2,500 if they win it all</strong>.
+        </p>
+        <div class="picks-grid champion-modal-grid">
+          ${entries.map(e => `
+            <button class="pick-option" data-pick="${e.id}" data-pick-bracket="${bracket.id}" type="button">
+              <span class="seed">${e.seed}</span>
+              ${entryIconHtml(e.id)}
+              <span class="name">${escapeHtml(e.name)}</span>
+            </button>
+          `).join('')}
+        </div>
+        <button class="btn ghost champion-modal-skip" data-dismiss-champion-prompt="${bracket.id}" type="button">Skip for now</button>
+      </div>
+    </div>`;
+}
+
+function dismissChampionPrompt(bracketId) {
+  state.championPromptDismissed[bracketId] = true;
+  render();
 }
 
 function renderOnboardingModal() {
@@ -481,39 +576,17 @@ function renderOnboardingModal() {
       <div class="onboarding-card">
         <div class="onboarding-eyebrow">Welcome to</div>
         <h2 class="onboarding-title">Bracket Madness</h2>
-        <p class="onboarding-sub">Quick rules so you can rack up points.</p>
 
-        <ol class="onboarding-list">
-          <li>
-            <strong>Vote each round.</strong> Whichever entry gets the most votes from the team advances to the next round.
-          </li>
-          <li>
-            <strong>Bigger points in later rounds.</strong> Each correct pick is worth more as the bracket narrows:
-            <table class="onboarding-table">
-              <tr><td>Round of 32</td><td>100 pts</td></tr>
-              <tr><td>Round of 16</td><td>200 pts</td></tr>
-              <tr><td>Quarterfinals</td><td>400 pts</td></tr>
-              <tr><td>Semifinals</td><td>800 pts</td></tr>
-              <tr><td>Final</td><td>1,600 pts</td></tr>
-            </table>
-          </li>
-          <li>
-            <strong>Upset bonus.</strong> Correctly call an upset (the lower seed wins) and earn extra points — the bigger the seed gap, the bigger the reward, multiplied by the round.
-          </li>
-          <li>
-            <strong>Pick a champion before round 1.</strong> Earn bonus points based on how far your champion makes it:
-            <table class="onboarding-table">
-              <tr><td>Reaches Round of 16</td><td>+50</td></tr>
-              <tr><td>Reaches Quarterfinals</td><td>+150</td></tr>
-              <tr><td>Reaches Semifinals</td><td>+400</td></tr>
-              <tr><td>Reaches Final</td><td>+1,000</td></tr>
-              <tr><td>Wins it all</td><td>+2,500</td></tr>
-            </table>
-          </li>
-          <li>
-            <strong>Lock in to peek.</strong> Voted on every matchup in a round? Click <em>Lock in my votes</em> to freeze your picks and reveal live tallies — no more changes after that.
-          </li>
-        </ol>
+        <p class="onboarding-key">
+          Your goal: <strong>vote for the entry you think most teammates will pick</strong> — not your personal favorite. You score when your pick wins the round.
+        </p>
+
+        <ul class="onboarding-list">
+          <li><strong>Vote on every matchup</strong> in the open round. The entry with the most team votes advances.</li>
+          <li><strong>Later rounds are worth more.</strong> Round of 32 picks earn 100 pts, doubling each round to 1,600 in the Final.</li>
+          <li><strong>Lock in</strong> when you've voted on everything — freezes your picks and reveals live tallies.</li>
+          <li><strong>Champion pick</strong> comes after Round of 32 closes. We'll prompt you. Bonus points if your champion advances.</li>
+        </ul>
 
         <button class="btn onboarding-cta" id="onboarding-dismiss" type="button">Got it — let's play</button>
       </div>
@@ -641,6 +714,12 @@ function renderStandingsTable(board, myId) {
   if (!board.length) {
     return '<div class="empty-state" style="padding:24px;"><p>No standings yet.</p></div>';
   }
+  const topN = 50;
+  const top = board.slice(0, topN);
+  const myIdx = board.findIndex(r => r.player_id === myId);
+  const meInTop = myIdx >= 0 && myIdx < topN;
+  const showMyPin = myIdx >= 0 && !meInTop;
+
   return `
     <table class="standings-table">
       <thead>
@@ -654,18 +733,26 @@ function renderStandingsTable(board, myId) {
         </tr>
       </thead>
       <tbody>
-        ${board.map((r, i) => `
-          <tr class="${r.player_id === myId ? 'you' : ''} ${i === 0 ? 'first' : ''}">
-            <td class="rank">${i + 1}</td>
-            <td class="player">${r.player_id === myId ? 'You' : escapeHtml(r.display_name)}</td>
-            <td class="num total">${r.total_points}</td>
-            <td class="num">${r.round_points}</td>
-            <td class="num">${r.champion_bonus}</td>
-            <td>${r.champions_alive}/${r.champions_picked || 0}</td>
-          </tr>
-        `).join('')}
+        ${top.map((r, i) => standingsTableRow(r, i + 1, myId)).join('')}
+        ${showMyPin ? `
+          <tr class="standings-divider"><td colspan="6">⋯</td></tr>
+          ${standingsTableRow(board[myIdx], myIdx + 1, myId)}
+        ` : ''}
       </tbody>
     </table>`;
+}
+
+function standingsTableRow(r, rank, myId) {
+  const isMe = r.player_id === myId;
+  return `
+    <tr class="${isMe ? 'you' : ''} ${rank === 1 ? 'first' : ''}">
+      <td class="rank">${rank}</td>
+      <td class="player">${isMe ? 'You' : escapeHtml(r.display_name)}</td>
+      <td class="num total">${r.total_points}</td>
+      <td class="num">${r.round_points}</td>
+      <td class="num">${r.champion_bonus}</td>
+      <td>${r.champions_alive}/${r.champions_picked || 0}</td>
+    </tr>`;
 }
 
 function canStillPickChampion(bracket) {
@@ -674,17 +761,34 @@ function canStillPickChampion(bracket) {
   return new Date(bracket.champion_picks_close_at) > new Date();
 }
 
+function userVotedAllR1(bracket) {
+  const r1 = bracketRounds(bracket.id).find(r => r.round_number === 1);
+  if (!r1) return false;
+  const matchups = state.matchups[r1.id] || [];
+  if (matchups.length === 0) return false;
+  return matchups.every(m => state.myVotes[m.id]);
+}
+
+function shouldShowChampionModal(bracket) {
+  if (!canStillPickChampion(bracket)) return false;
+  if (state.myChampionPicks[bracket.id]) return false;
+  if (state.championPromptDismissed && state.championPromptDismissed[bracket.id]) return false;
+  if (state.showOnboarding) return false;
+  // New flow: prompt once the user has voted on all R1 matchups
+  if (!userVotedAllR1(bracket)) return false;
+  return true;
+}
+
 function renderChampionPickGrid(bracket) {
   if (!canStillPickChampion(bracket)) return '';
+  // Only show the inline expanded grid when user explicitly clicked "Change pick"
+  if (state.changingPickFor !== bracket.id) return '';
   const entries = Object.values(state.entries)
     .filter(e => e.bracket_id === bracket.id)
     .sort((a, b) => a.seed - b.seed);
   if (entries.length === 0) return '';
 
   const myPick = state.myChampionPicks[bracket.id];
-  const isChanging = state.changingPickFor === bracket.id;
-  // Only show the expanded grid if no pick yet OR user explicitly clicked "Change pick"
-  if (myPick && !isChanging) return '';
 
   const cd = bracket.champion_picks_close_at
     ? formatCountdown(bracket.champion_picks_close_at)
@@ -721,8 +825,17 @@ function renderChampionPickCard(bracket) {
   if (!canStillPickChampion(bracket)) return '';
   const myPick = state.myChampionPicks[bracket.id];
   const isChanging = state.changingPickFor === bracket.id;
-  // Only show the compact card when picked AND not currently changing (grid is showing instead)
-  if (!myPick || isChanging) return '';
+  if (isChanging) return ''; // Grid is showing instead
+
+  // If user has no pick yet (e.g., dismissed the modal), show a "Pick now" prompt in the sidebar
+  if (!myPick) {
+    return `
+      <aside class="champion-pick-card no-pick">
+        <div class="cpc-label">Champion pick</div>
+        <p class="cpc-empty">You haven't picked yet. Choose the entry you think will win the whole bracket for bonus points.</p>
+        <button class="btn lime cpc-change" data-change-pick="${bracket.id}" type="button">Pick now</button>
+      </aside>`;
+  }
 
   const cd = bracket.champion_picks_close_at
     ? formatCountdown(bracket.champion_picks_close_at)
@@ -892,7 +1005,7 @@ function renderLockBanner(bracket) {
   if (myVotedCount < total) {
     return `
       <section class="lock-banner partial">
-        <span><strong>${myVotedCount}/${total}</strong> votes cast for ${escapeHtml(openRound.name)} · finish voting to unlock the "Lock in" button.</span>
+        <span><strong>${myVotedCount}/${total}</strong> votes cast for ${escapeHtml(openRound.name)} · pick the entry you think most teammates will choose, not your personal favorite. Finish voting to unlock the "Lock in" button.</span>
       </section>`;
   }
   return `
@@ -910,12 +1023,17 @@ function renderRoundColumn(round, isFinal) {
     : (round.status === 'pending'
       ? new Date(round.opens_at).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })
       : 'Open');
+  const ptsPerPick = 100 * Math.pow(2, round.round_number - 1);
+  const ptsLabel = ptsPerPick >= 1000
+    ? (ptsPerPick / 1000).toLocaleString() + 'k pts ea.'
+    : ptsPerPick + ' pts ea.';
   return `
     <div class="round-col">
       <div class="round-header">
         <span>${escapeHtml(round.name)}</span>
         <span class="status ${statusClass}">${statusText}</span>
       </div>
+      <div class="round-subhead">${ptsLabel}</div>
       ${matchups.length === 0
         ? '<div style="color:var(--mid-gray);font-size:12px;font-style:italic;">No matchups yet</div>'
         : matchups.map(m => renderMatchup(m, round, isFinal)).join('')}
@@ -1056,7 +1174,6 @@ function renderMatchup(matchup, round, isFinal) {
 
 function renderStandings(bracket) {
   if (!bracket) {
-    // No bracket context — show empty placeholder
     return `
       <aside class="standings">
         <h2>Standings</h2>
@@ -1073,24 +1190,37 @@ function renderStandings(bracket) {
   }
   const myId = state.player?.id;
   const board = state.bracketLeaderboards[bracket.id] || [];
-  const rows = board.slice(0, 12);
+  const topN = 12;
+  const top = board.slice(0, topN);
+  const myIdx = board.findIndex(r => r.player_id === myId);
+  const myRow = myIdx >= 0 ? board[myIdx] : null;
+  const meIsInTop = myIdx >= 0 && myIdx < topN;
+  const showMyPin = myRow && !meIsInTop;
   return `
     <aside class="standings">
       <h2>${escapeHtml(bracket.name)} standings</h2>
-      <div class="h2-sub">This bracket · live</div>
-      ${rows.map((r, i) => `
-        <div class="leader-row ${r.player_id === myId ? 'you' : ''} ${i === 0 ? 'medal-1' : ''}">
-          <div class="rank">${i + 1}</div>
-          <div>${r.player_id === myId ? 'You' : escapeHtml(r.display_name)}</div>
-          ${r.champions_picked > 0
-            ? (r.champions_alive > 0
-              ? `<div class="champ-tag">CHAMP ${r.champions_alive > 1 ? '×' + r.champions_alive : 'IN'}</div>`
-              : `<div class="champ-tag out">OUT</div>`)
-            : '<div></div>'}
-          <div class="pts">${r.total_points}</div>
-        </div>
-      `).join('')}
+      <div class="h2-sub">This bracket · ${board.length} player${board.length === 1 ? '' : 's'}</div>
+      ${top.map((r, i) => leaderRow(r, i + 1, myId)).join('')}
+      ${showMyPin ? `
+        <div class="leader-divider">…</div>
+        ${leaderRow(myRow, myIdx + 1, myId)}
+      ` : ''}
     </aside>`;
+}
+
+function leaderRow(r, rank, myId) {
+  const isMe = r.player_id === myId;
+  return `
+    <div class="leader-row ${isMe ? 'you' : ''} ${rank === 1 ? 'medal-1' : ''}">
+      <div class="rank">${rank}</div>
+      <div>${isMe ? 'You' : escapeHtml(r.display_name)}</div>
+      ${r.champions_picked > 0
+        ? (r.champions_alive > 0
+          ? `<div class="champ-tag">CHAMP ${r.champions_alive > 1 ? '×' + r.champions_alive : 'IN'}</div>`
+          : `<div class="champ-tag out">OUT</div>`)
+        : '<div></div>'}
+      <div class="pts">${r.total_points}</div>
+    </div>`;
 }
 
 function renderFooter() {
@@ -1131,17 +1261,42 @@ function attachAppHandlers() {
     e.preventDefault();
     reopenOnboarding();
   });
+  document.querySelectorAll('[data-dismiss-champion-prompt]').forEach(el => {
+    el.addEventListener('click', () => dismissChampionPrompt(el.dataset.dismissChampionPrompt));
+  });
+  document.getElementById('champion-modal-overlay')?.addEventListener('click', (e) => {
+    if (e.target.id === 'champion-modal-overlay') {
+      const card = document.querySelector('#champion-modal-overlay .onboarding-card');
+      const bracketId = card?.querySelector('[data-dismiss-champion-prompt]')?.dataset.dismissChampionPrompt;
+      if (bracketId) dismissChampionPrompt(bracketId);
+    }
+  });
 }
 
 // ============================================================
 // AUTO-REFRESH
+// Recursive setTimeout with jitter spreads simultaneous-user load so 2000 clients
+// don't all hit Supabase in the same 30-second tick. Baseline 60s + 0-25s random.
+// Polling pauses when the tab is hidden; failures back off exponentially.
 // ============================================================
-setInterval(async () => {
-  if (state.user && document.visibilityState === 'visible') {
-    await loadData();
-    render();
+const POLL_BASE_MS = 60000;
+const POLL_JITTER_MS = 25000;
+
+function schedulePoll() {
+  let delay = POLL_BASE_MS + Math.random() * POLL_JITTER_MS;
+  // Exponential backoff on repeated failures, capped at ~10 minutes
+  if (_consecutiveFailures > 0) {
+    delay = Math.min(10 * 60 * 1000, delay * Math.pow(2, Math.min(_consecutiveFailures, 5)));
   }
-}, 30000);
+  setTimeout(async () => {
+    if (state.user && document.visibilityState === 'visible') {
+      const ok = await safeLoadData();
+      if (ok) render();
+    }
+    schedulePoll();
+  }, delay);
+}
+schedulePoll();
 
 // Lightweight per-second countdown updates (no full re-render)
 setInterval(() => {
