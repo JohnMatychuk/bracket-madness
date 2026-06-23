@@ -176,7 +176,10 @@ function loadCacheSlices() {
 
 async function loadData() {
   if (!state.user) return;
-  if (_loadInFlight) return; // avoid overlapping fetches when user is active
+  // NOTE: the concurrency guard lives in safeLoadData(). Do NOT re-check
+  // _loadInFlight here — safeLoadData() sets it to true *before* calling us,
+  // so a second check would make this function a no-op when invoked through
+  // the wrapper, leaving the UI permanently stuck on cached data.
 
   // Use allSettled so a single rate-limited fetch doesn't tank the whole sync.
   // Whatever succeeds updates state; whatever fails preserves prior state.
