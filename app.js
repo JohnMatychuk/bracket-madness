@@ -61,7 +61,16 @@ async function bootstrap() {
   const { data: { session } } = await sb.auth.getSession();
   if (session) {
     state.user = session.user;
-    await safeLoadData();
+    // Paint from cache instantly, then fetch fresh in background
+    const usedCache = loadCacheSlices();
+    if (usedCache) {
+      state.ready = true;
+      render();
+      // Fire-and-render: kick off real load but don't block initial paint
+      safeLoadData().then((ok) => { if (ok) render(); });
+    } else {
+      await safeLoadData();
+    }
     try { state.showOnboarding = !localStorage.getItem('bm-onboarding-seen'); } catch {}
   }
   state.ready = true;
@@ -120,70 +129,121 @@ async function signOut() {
 let _loadInFlight = false;
 let _consecutiveFailures = 0;
 
+// Slow-changing slices we cache to localStorage so the UI paints instantly on
+// next visit and the first network sync has nothing critical to render-block on.
+const CACHE_KEY = 'bm-cache-v1';
+const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+function saveCacheSlices() {
+  try {
+    localStorage.setItem(CACHE_KEY, JSON.stringify({
+      ts: Date.now(),
+      brackets: state.brackets,
+      entries: state.entries,
+      rounds: state.rounds,
+      matchups: state.matchups,
+    }));
+  } catch {}
+}
+function loadCacheSlices() {
+  try {
+    const raw = localStorage.getItem(CACHE_KEY);
+    if (!raw) return false;
+    const obj = JSON.parse(raw);
+    if (!obj || (Date.now() - obj.ts) > CACHE_TTL_MS) return false;
+    if (obj.brackets) state.brackets = obj.brackets;
+    if (obj.entries) state.entries = obj.entries;
+    if (obj.rounds) state.rounds = obj.rounds;
+    if (obj.matchups) state.matchups = obj.matchups;
+    return true;
+  } catch { return false; }
+}
+
 async function loadData() {
   if (!state.user) return;
   if (_loadInFlight) return; // avoid overlapping fetches when user is active
 
-  const [
-    playerRes, bracketsRes, entriesRes, roundsRes, matchupsRes,
-    votesRes, picksRes, locksRes, leaderboardRes,
-  ] = await Promise.all([
-    sb.from('players').select('*').eq('id', state.user.id).maybeSingle(),
-    sb.from('brackets').select('*').order('sort_order').order('created_at'),
-    sb.from('entries').select('*').order('seed'),
-    sb.from('rounds').select('*').order('round_number'),
-    sb.from('matchups').select('*').order('position'),
-    sb.from('votes').select('*').eq('player_id', state.user.id),
-    sb.from('champion_picks').select('*').eq('player_id', state.user.id),
-    sb.from('round_locks').select('*').eq('player_id', state.user.id),
-    sb.from('leaderboard').select('*').order('total_points', { ascending: false }),
+  // Use allSettled so a single rate-limited fetch doesn't tank the whole sync.
+  // Whatever succeeds updates state; whatever fails preserves prior state.
+  // Explicit columns to keep per-poll payloads small at scale
+  const settle = await Promise.allSettled([
+    sb.from('players').select('id,display_name,email').eq('id', state.user.id).maybeSingle(),
+    sb.from('brackets').select('id,name,slug,status,champion_picks_close_at,champion_bonus_points,sort_order,is_visible').order('sort_order').order('created_at'),
+    sb.from('entries').select('id,bracket_id,seed,name,icon').order('seed'),
+    sb.from('rounds').select('id,bracket_id,round_number,name,opens_at,closes_at,status').order('round_number'),
+    sb.from('matchups').select('id,round_id,position,entry_a_id,entry_b_id,winner_entry_id,is_tie').order('position'),
+    sb.from('votes').select('matchup_id,voted_entry_id,player_id').eq('player_id', state.user.id),
+    sb.from('champion_picks').select('bracket_id,entry_id,player_id').eq('player_id', state.user.id),
+    sb.from('round_locks').select('round_id,player_id,locked_at').eq('player_id', state.user.id),
+    sb.from('leaderboard').select('player_id,display_name,total_points,round_points,champion_bonus,champions_alive,champions_picked').order('total_points', { ascending: false }),
   ]);
+  const [playerRes, bracketsRes, entriesRes, roundsRes, matchupsRes,
+         votesRes, picksRes, locksRes, leaderboardRes] = settle.map(r => r.status === 'fulfilled' ? r.value : null);
+  const anyCriticalFailed = settle.some(r => r.status === 'rejected');
 
-  state.player = playerRes.data;
-  state.brackets = bracketsRes.data || [];
-  state.entries = {};
-  (entriesRes.data || []).forEach(e => state.entries[e.id] = e);
-  state.rounds = {};
-  (roundsRes.data || []).forEach(r => {
-    if (!state.rounds[r.bracket_id]) state.rounds[r.bracket_id] = [];
-    state.rounds[r.bracket_id].push(r);
-  });
-  state.matchups = {};
-  (matchupsRes.data || []).forEach(m => {
-    if (!state.matchups[m.round_id]) state.matchups[m.round_id] = [];
-    state.matchups[m.round_id].push(m);
-  });
-  state.myVotes = {};
-  (votesRes.data || []).forEach(v => state.myVotes[v.matchup_id] = v);
-  state.myChampionPicks = {};
-  (picksRes.data || []).forEach(p => state.myChampionPicks[p.bracket_id] = p);
-  state.myLocks = {};
-  (locksRes.data || []).forEach(l => state.myLocks[l.round_id] = l);
-  state.leaderboard = leaderboardRes.data || [];
+  if (playerRes?.data) state.player = playerRes.data;
+  if (bracketsRes?.data) state.brackets = bracketsRes.data;
+  if (entriesRes?.data) {
+    state.entries = {};
+    entriesRes.data.forEach(e => state.entries[e.id] = e);
+  }
+  if (roundsRes?.data) {
+    state.rounds = {};
+    roundsRes.data.forEach(r => {
+      if (!state.rounds[r.bracket_id]) state.rounds[r.bracket_id] = [];
+      state.rounds[r.bracket_id].push(r);
+    });
+  }
+  if (matchupsRes?.data) {
+    state.matchups = {};
+    matchupsRes.data.forEach(m => {
+      if (!state.matchups[m.round_id]) state.matchups[m.round_id] = [];
+      state.matchups[m.round_id].push(m);
+    });
+  }
+  if (votesRes?.data) {
+    state.myVotes = {};
+    votesRes.data.forEach(v => state.myVotes[v.matchup_id] = v);
+  }
+  if (picksRes?.data) {
+    state.myChampionPicks = {};
+    picksRes.data.forEach(p => state.myChampionPicks[p.bracket_id] = p);
+  }
+  if (locksRes?.data) {
+    state.myLocks = {};
+    locksRes.data.forEach(l => state.myLocks[l.round_id] = l);
+  }
+  if (leaderboardRes?.data) state.leaderboard = leaderboardRes.data;
 
-  // Fetch tallies only for rounds the caller can see: closed rounds OR rounds the caller has locked
-  state.tallies = {};
-  const tallyPromises = [];
-  Object.values(state.rounds).flat().forEach(round => {
-    const visible = round.status === 'closed' || !!state.myLocks[round.id];
-    if (visible) {
-      tallyPromises.push(
-        sb.rpc('get_round_tallies', { p_round_id: round.id }).then(({ data }) => {
-          (data || []).forEach(t => { state.tallies[t.matchup_id] = t; });
-        })
-      );
+  // Persist the slow-changing slices so next page load renders from cache instantly
+  saveCacheSlices();
+
+  // Tallies — RPC per visible round. allSettled keeps partial wins.
+  const tallyTargets = Object.values(state.rounds).flat()
+    .filter(r => r.status === 'closed' || !!state.myLocks[r.id]);
+  const tallyResults = await Promise.allSettled(
+    tallyTargets.map(r => sb.rpc('get_round_tallies', { p_round_id: r.id }))
+  );
+  const newTallies = { ...state.tallies };
+  tallyResults.forEach(res => {
+    if (res.status === 'fulfilled') {
+      (res.value.data || []).forEach(t => { newTallies[t.matchup_id] = t; });
     }
   });
-  await Promise.all(tallyPromises);
+  state.tallies = newTallies;
 
-  // Per-bracket leaderboards (sidebar uses these — overall stays in state.leaderboard for player chip)
-  state.bracketLeaderboards = {};
-  const boardPromises = state.brackets.map(b =>
-    sb.rpc('get_bracket_leaderboard', { p_bracket_id: b.id }).then(({ data }) => {
-      state.bracketLeaderboards[b.id] = data || [];
-    })
+  // Per-bracket leaderboards — also resilient to partial failure
+  const boardResults = await Promise.allSettled(
+    state.brackets.map(b => sb.rpc('get_bracket_leaderboard', { p_bracket_id: b.id }))
   );
-  await Promise.all(boardPromises);
+  const newBoards = { ...state.bracketLeaderboards };
+  boardResults.forEach((res, idx) => {
+    if (res.status === 'fulfilled') {
+      newBoards[state.brackets[idx].id] = res.value.data || [];
+    }
+  });
+  state.bracketLeaderboards = newBoards;
+
+  if (anyCriticalFailed) throw new Error('Partial sync failure');
 
   if (!state.activeBracketId && state.brackets.length > 0) {
     state.activeBracketId = state.brackets[0].id;
@@ -1274,27 +1334,55 @@ function attachAppHandlers() {
 }
 
 // ============================================================
-// AUTO-REFRESH
-// Recursive setTimeout with jitter spreads simultaneous-user load so 2000 clients
-// don't all hit Supabase in the same 30-second tick. Baseline 60s + 0-25s random.
-// Polling pauses when the tab is hidden; failures back off exponentially.
+// AUTO-REFRESH (smart polling)
+// Cadence adapts to how close the open round is to its deadline:
+//   > 2h away  → poll every 5 min  ± 60s jitter
+//   30m – 2h   → poll every 90s    ± 20s jitter
+//   < 30m      → poll every 30s    ± 10s jitter
+// Jitter prevents 2000 users from all hitting Supabase in the same tick.
+// Failures back off exponentially up to a 10-minute cap.
+// Tab hidden → polling pauses entirely.
 // ============================================================
-const POLL_BASE_MS = 60000;
-const POLL_JITTER_MS = 25000;
+function nextPollDelayMs() {
+  // Find the soonest closing open round across all brackets
+  let soonestCloseMs = Infinity;
+  const now = Date.now();
+  Object.values(state.rounds).flat().forEach(r => {
+    if (r.status === 'open' && r.closes_at) {
+      const t = new Date(r.closes_at).getTime() - now;
+      if (t > 0 && t < soonestCloseMs) soonestCloseMs = t;
+    }
+  });
+  let base, jitter;
+  if (soonestCloseMs < 30 * 60 * 1000) {            // < 30 min — STAMPEDE WINDOW
+    // Widened jitter on purpose: at 2000+ clients, narrow jitter = simultaneous spike
+    // when round closes. 45s base + 30s jitter spreads polls across a 30s window
+    // so peak rate sits at ~25 req/sec rather than 200+/sec.
+    base = 45_000; jitter = 30_000;
+  } else if (soonestCloseMs < 2 * 60 * 60 * 1000) { // 30m – 2h
+    base = 90_000; jitter = 20_000;
+  } else {                                          // > 2h or no open round
+    base = 5 * 60_000; jitter = 60_000;
+  }
+  let delay = base + Math.random() * jitter;
+  if (_consecutiveFailures > 0) {
+    delay = Math.min(10 * 60_000, delay * Math.pow(2, Math.min(_consecutiveFailures, 5)));
+  }
+  return delay;
+}
+
+function pollPausedByModal() {
+  return state.showOnboarding || document.querySelector('#champion-modal-overlay');
+}
 
 function schedulePoll() {
-  let delay = POLL_BASE_MS + Math.random() * POLL_JITTER_MS;
-  // Exponential backoff on repeated failures, capped at ~10 minutes
-  if (_consecutiveFailures > 0) {
-    delay = Math.min(10 * 60 * 1000, delay * Math.pow(2, Math.min(_consecutiveFailures, 5)));
-  }
   setTimeout(async () => {
-    if (state.user && document.visibilityState === 'visible') {
+    if (state.user && document.visibilityState === 'visible' && !pollPausedByModal()) {
       const ok = await safeLoadData();
       if (ok) render();
     }
     schedulePoll();
-  }, delay);
+  }, nextPollDelayMs());
 }
 schedulePoll();
 
